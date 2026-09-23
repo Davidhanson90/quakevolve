@@ -1,0 +1,60 @@
+{
+  "name": "quakevolve",
+  "version": "0.1.0",
+  "description": "Educational genetic-algorithm playground that evolves predictors against historical earthquake data.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build:verify": "npm run test:coverage && npm run lint && npm run build && npm run test:check",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:check": "tsc -p tsconfig.json --noEmit",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "genetic-algorithm",
+    "earthquake",
+    "machine-learning",
+    "lit",
+    "web-components",
+    "typescript",
+    "education",
+    "demo"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Davidhanson90/quakevolve.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Davidhanson90/quakevolve/issues"
+  },
+  "homepage": "https://davidhanson90.github.io/quakevolve/",
+  "author": "David Graville",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "lit": "^3.3.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.21.0",
+    "@types/node": "^25.3.5",
+    "@typescript-eslint/eslint-plugin": "^8.26.1",
+    "@typescript-eslint/parser": "^8.26.1",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^9.21.0",
+    "eslint-plugin-import": "^2.31.0",
+    "globals": "^16.0.0",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
+  }
+}
