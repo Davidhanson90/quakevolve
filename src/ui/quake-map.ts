@@ -1,23 +1,28 @@
 import { LitElement, css, html } from "lit";
 import type { QuakeEvent } from "../data/types.js";
 import type { Prediction } from "../model/genome.js";
+import type { QuakeForecast } from "../model/forecast.js";
 
 export class QvQuakeMap extends LitElement {
   static properties = {
     events: { attribute: false },
     highlight: { attribute: false },
-    prediction: { attribute: false }
+    prediction: { attribute: false },
+    forecasts: { attribute: false }
   };
 
   declare events: QuakeEvent[];
   declare highlight: QuakeEvent | null;
   declare prediction: Prediction | null;
+  /** Experimental top-N rollout points (drawn as numbered diamonds). */
+  declare forecasts: QuakeForecast[];
 
   constructor() {
     super();
     this.events = [];
     this.highlight = null;
     this.prediction = null;
+    this.forecasts = [];
   }
 
   static styles = css`
@@ -93,6 +98,25 @@ export class QvQuakeMap extends LitElement {
       ctx.stroke();
       ctx.fillStyle = "rgba(240, 180, 41, 0.35)";
       ctx.fill();
+    }
+
+    for (const f of this.forecasts ?? []) {
+      const { x, y } = this.project(f.lat, f.lon, w, h);
+      const s = 6;
+      ctx.strokeStyle = "#ff6b8a";
+      ctx.fillStyle = "rgba(255, 107, 138, 0.3)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x, y - s);
+      ctx.lineTo(x + s, y);
+      ctx.lineTo(x, y + s);
+      ctx.lineTo(x - s, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#ffd1dc";
+      ctx.font = "10px ui-monospace, monospace";
+      ctx.fillText(String(f.rank), x + s + 2, y - s + 2);
     }
 
     if (this.highlight) {
