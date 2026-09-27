@@ -12,6 +12,12 @@ import {
 import { HEAD_COUNT, WEIGHTS_PER_HEAD, decodeTolerances, type Genome } from "../model/genome.js";
 import { evaluateFitness, replayWindow, type ReplayStep } from "../model/score.js";
 import {
+  BIG_QUAKE_MAG,
+  FORECAST_DISCLAIMER,
+  forecastBigQuakes,
+  type ForecastResult
+} from "../model/forecast.js";
+import {
   DEFAULT_GA_CONFIG,
   evolveOneGeneration,
   initPopulation,
@@ -38,7 +44,9 @@ export class QvPlayground extends LitElement {
     holdoutCount: { state: true },
     history: { state: true },
     replayIndex: { state: true },
-    meanPop: { state: true }
+    meanPop: { state: true },
+    forecast: { state: true },
+    forecastGeneration: { state: true }
   };
 
   declare loading: boolean;
@@ -57,6 +65,8 @@ export class QvPlayground extends LitElement {
   declare history: number[];
   declare replayIndex: number;
   declare meanPop: number;
+  declare forecast: ForecastResult | null;
+  declare forecastGeneration: number;
 
   private allEvents: QuakeEvent[] = [];
   /** Exclusive end index of the train prefix within allEvents. */
@@ -85,6 +95,8 @@ export class QvPlayground extends LitElement {
     this.history = [];
     this.replayIndex = 0;
     this.meanPop = 0;
+    this.forecast = null;
+    this.forecastGeneration = 0;
   }
 
   static styles = css`
@@ -230,6 +242,41 @@ export class QvPlayground extends LitElement {
     .err {
       color: var(--qv-danger, #ff6b8a);
     }
+    .experimental {
+      background: rgba(255, 107, 138, 0.1);
+      border: 1px solid rgba(255, 107, 138, 0.45);
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      font-size: 0.85rem;
+    }
+    .experimental strong {
+      color: var(--qv-danger, #ff6b8a);
+    }
+    table.forecast {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+    }
+    table.forecast th,
+    table.forecast td {
+      text-align: left;
+      padding: 6px 6px;
+      border-bottom: 1px solid var(--qv-border, #2a3b55);
+      vertical-align: top;
+    }
+    table.forecast th {
+      color: var(--qv-muted, #9aa8bc);
+      font-weight: 500;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    table.forecast .sub {
+      color: var(--qv-muted, #9aa8bc);
+      font-size: 0.74rem;
+    }
   `;
 
   connectedCallback(): void {
@@ -304,6 +351,12 @@ export class QvPlayground extends LitElement {
     const to = Math.min(this.allEvents.length - 1, this.trainEnd + 40);
     this.replaySteps = replayWindow(this.ga.best.genome, this.allEvents, from, to);
     this.replayIndex = 0;
+    // Experimental: roll the current best genome past the catalog end for the top-5 M>6 list
+    this.forecast = forecastBigQuakes(this.ga.best.genome, this.allEvents, {
+      minMag: BIG_QUAKE_MAG,
+      count: 5
+    });
+    this.forecastGeneration = this.ga.generation;
   }
 
   private stopLoop(): void {
@@ -375,6 +428,79 @@ export class QvPlayground extends LitElement {
       lines.push(`  ${headNames[h]}: bias=${bias.toFixed(2)} · ${top}`);
     }
     return lines.join("\n");
+  }
+
+  private renderForecast() {
+    const fc = this.forecast;
+    const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+    const stopNote: Record<ForecastResult["stoppedReason"], string> = {
+      found: "",
+      maxSteps: "the rollout step limit was reached",
+      horizon: "the one-year horizon was reached",
+      degenerate: "the rollout saturated (latitude pinned at a pole or magnitude at the M9.5 cap) and was stopped"
+    };
+    return html`
+      <div class="experimental">
+        <strong>${FORECAST_DISCLAIMER}</strong>
+        The current best genome is rolled forward from the last catalog event, feeding each
+        predicted event back in as history. A toy GA on a 2018–2024 snapshot cannot predict
+        real earthquakes.
+      </div>
+      ${!fc
+        ? html`<p class="muted">Predictions appear after the population initializes.</p>`
+        : html`
+            ${fc.forecasts.length
+              ? html`
+                  <table class="forecast">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Date (UTC)</th>
+                        <th>Location</th>
+                        <th>Mag</th>
+                        <th>Self-score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${fc.forecasts.map(
+                        (f) => html`
+                          <tr>
+                            <td>${f.rank}</td>
+                            <td>
+                              ${day(f.time)}
+                              <div class="sub">window ${day(f.windowStart)} → ${day(f.windowEnd)}</div>
+                            </td>
+                            <td>
+                              ${f.region}
+                              <div class="sub">
+                                lat ${f.lat.toFixed(1)}, lon ${f.lon.toFixed(1)} · ±${f.radiusKm.toFixed(0)} km
+                              </div>
+                            </td>
+                            <td>M${f.mag.toFixed(2)}</td>
+                            <td>
+                              ${f.score.toFixed(2)}
+                              <div class="sub">step ${f.step}</div>
+                            </td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                  </table>
+                `
+              : html`<p class="muted">
+                  The current best genome predicts no M&gt;${BIG_QUAKE_MAG.toFixed(1)} events in its rollout.
+                </p>`}
+            <p class="muted" style="margin:8px 0 0;font-size:0.8rem">
+              Generation ${this.forecastGeneration} · refreshed every 5 generations while training ·
+              predictions after the last catalog event (${day(fc.anchorTime)}), so dates may already be in the past.
+              ${fc.forecasts.length < 5 && fc.stoppedReason !== "found"
+                ? html`Only ${fc.forecasts.length} found: ${stopNote[fc.stoppedReason]} after ${fc.stepsRun} steps.`
+                : null}
+              Self-score = P(M&gt;${BIG_QUAKE_MAG.toFixed(1)}) under the genome's own magnitude tolerance gene;
+              window and radius come from its time and distance tolerance genes. None of these are calibrated.
+            </p>
+          `}
+    `;
   }
 
   private currentReplay(): ReplayStep | null {
@@ -474,14 +600,21 @@ export class QvPlayground extends LitElement {
           </section>
 
           <section class="panel">
+            <h2>Next 5 predicted M&gt;${BIG_QUAKE_MAG.toFixed(1)} events (experimental)</h2>
+            ${this.renderForecast()}
+          </section>
+
+          <section class="panel">
             <h2>Catalog map</h2>
             <qv-quake-map
               .events=${this.allEvents}
               .highlight=${highlight}
               .prediction=${prediction}
+              .forecasts=${this.forecast?.forecasts ?? []}
             ></qv-quake-map>
             <p class="muted" style="margin:8px 0 0;font-size:0.8rem">
               Blue dots = historical M≥5.5 events. Yellow ring = model prediction; green = actual next event (replay).
+              Numbered red diamonds = experimental top-5 M&gt;${BIG_QUAKE_MAG.toFixed(1)} rollout (not a forecast).
             </p>
           </section>
 

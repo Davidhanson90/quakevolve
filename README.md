@@ -23,7 +23,8 @@ No TensorFlow.js, no API keys, no backend. Pure TypeScript + Lit + Vite. The cat
 3. Hit **Train** — watch generation count, best train fitness, and the fitness chart climb
 4. Compare **holdout** soft-score (yellow dashed line) as a reality check
 5. On the map: yellow ring = model’s next-event guess, green = actual next event during replay
-6. **Pause** / **Reset** as needed
+6. Watch the **Next 5 predicted M>6.0 events (experimental)** panel update as the GA evolves
+7. **Pause** / **Reset** as needed
 
 ## Quick start
 
@@ -58,6 +59,31 @@ npm run build:verify
 **Genome:** four linear heads (weights + bias) plus three tolerance genes used by soft scoring. Operators: tournament selection, uniform / single-point crossover, Gaussian-ish mutation, elitism.
 
 **Fitness:** weighted soft scores — time 35%, region (haversine) 40%, magnitude 25% — averaged over the train window. Holdout uses the later 30% of the timeline.
+
+## Experimental: next 5 predicted M>6.0 events
+
+> **Experimental model output. Not a real earthquake forecast.** A linear toy model evolved on a
+> 2018–2024 snapshot cannot predict real earthquakes. This panel exists to show what the genome
+> “believes”, and how quickly that falls apart once it has to feed on its own guesses.
+
+While training (every 5 generations, and on Pause/Reset) the current best genome is **rolled forward**
+from the last catalog event: predict the next event, append it to the history as if it happened,
+predict again (up to 250 steps / one year). Predicted events with magnitude **> 6.0** that fall after
+the last catalog event are sorted by date and the first five are shown in the UI panel and as numbered
+red diamonds on the map (`src/model/forecast.ts`).
+
+Each row shows:
+
+| Column | Meaning |
+|--------|---------|
+| Date (UTC) | Predicted time, plus a window from the genome’s time-tolerance gene |
+| Location | lat/lon, a region name taken from the nearest real catalog event’s USGS `place` (offline), and a radius from the distance-tolerance gene |
+| Mag | Predicted magnitude |
+| Self-score | P(M > 6.0) if magnitude errors followed the Laplace kernel the genome is scored with (scale = magnitude-tolerance gene). **Not calibrated.** Also shows the rollout step. |
+
+Caveats: the catalog ends on 2024-12-30, so “upcoming” dates are right after that and may already be
+in the past. Rollouts drift (location walks, magnitudes escalate), so the rollout stops early if latitude
+hits a pole or magnitude hits the M9.5 cap. Fewer than five rows (or none) is a normal result.
 
 ## Dataset
 

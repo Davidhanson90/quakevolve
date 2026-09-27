@@ -19,6 +19,10 @@ export interface Prediction {
   mag: number;
 }
 
+/** Output clamps applied by predict(). */
+export const PRED_MAG_MIN = 4.5;
+export const PRED_MAG_MAX = 9.5;
+
 const WEIGHT_MIN = -3;
 const WEIGHT_MAX = 3;
 const TOL_MIN = 0.15;
@@ -75,7 +79,7 @@ export function predict(
   const logHours = clamp(headDot(genome.genes, 0, features), 0, Math.log1p(24 * 365));
   const dLat = clamp(headDot(genome.genes, 1, features), -40, 40);
   const dLon = clamp(headDot(genome.genes, 2, features), -60, 60);
-  const mag = clamp(headDot(genome.genes, 3, features), 4.5, 9.5);
+  const mag = clamp(headDot(genome.genes, 3, features), PRED_MAG_MIN, PRED_MAG_MAX);
   let lat = clamp(lastLat + dLat, -90, 90);
   let lon = lastLon + dLon;
   while (lon > 180) lon -= 360;
