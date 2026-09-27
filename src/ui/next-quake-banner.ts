@@ -108,7 +108,8 @@ export class QvNextQuakeBanner extends LitElement {
     }
     .main {
       display: grid;
-      grid-template-columns: minmax(0, 1.25fr) auto minmax(0, 1.5fr);
+      /* Fixed shares (not "auto"): a long chain note wraps instead of squeezing WHEN / WHERE. */
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1.5fr);
       gap: 4px 28px;
       align-items: end;
       margin-top: 6px;
@@ -228,7 +229,7 @@ export class QvNextQuakeBanner extends LitElement {
         font-size: 0.68rem;
       }
       .main {
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
         gap: 0 12px;
         margin-top: 2px;
         min-height: 0;
