@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:check": "tsc -p tsconfig.json --noEmit",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "data:update": "node scripts/update-earthquakes.mjs"
   },
   "keywords": [
     "genetic-algorithm",

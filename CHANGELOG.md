@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-- **Experimental** "Next 5 predicted M>6.0 events" panel: while training, the current best genome is
-  rolled forward past the end of the catalog and the first five predicted M>6.0 events are listed
-  (date + window, lat/lon + nearest catalog region, magnitude, uncalibrated self-score) and drawn on
-  the map. Clearly labelled "Experimental model output. Not a real earthquake forecast."
-- `forecastBigQuakes` rollout (`src/model/forecast.ts`) and offline nearest-place lookup (`src/data/places.ts`) with tests
+- **Experimental** top-3 candidates panel: the three fittest distinct genomes each show one prediction
+  for the next M>6.0 event **after today** (date + window, region + lat/lon, magnitude, uncalibrated score),
+  drawn as colour-coded geodesic circles (radius = genome location tolerance) with a legend.
+  Deterministic and cached per genome, so a row only changes when that genome changes. Replaces the
+  unreleased chained "next 5" list from the best genome (PR #1). Labelled "Experimental. Not a real earthquake forecast."
+- Catalog refreshed to 2026-09-26 (4,065 USGS M≥5.5 events) and `npm run data:update`
+  (`scripts/update-earthquakes.mjs`) added to regenerate it from the USGS FDSN event service.
 
 ## 0.1.0 — 2026-09-23
 

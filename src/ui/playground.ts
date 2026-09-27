@@ -13,10 +13,17 @@ import { HEAD_COUNT, WEIGHTS_PER_HEAD, decodeTolerances, type Genome } from "../
 import { evaluateFitness, replayWindow, type ReplayStep } from "../model/score.js";
 import {
   BIG_QUAKE_MAG,
+  DEFAULT_LOOKAHEAD_STEPS,
   FORECAST_DISCLAIMER,
-  forecastBigQuakes,
+  startOfNextUtcDay,
   type ForecastResult
 } from "../model/forecast.js";
+import {
+  CANDIDATE_COUNT,
+  CandidateForecaster,
+  topCandidates,
+  type CandidateForecast
+} from "../model/candidates.js";
 import {
   DEFAULT_GA_CONFIG,
   evolveOneGeneration,
@@ -25,7 +32,7 @@ import {
   type GaState
 } from "../ga/evolve.js";
 import "./fitness-chart.js";
-import "./quake-map.js";
+import { CANDIDATE_COLORS, type MapCandidate } from "./quake-map.js";
 
 export class QvPlayground extends LitElement {
   static properties = {
@@ -45,8 +52,7 @@ export class QvPlayground extends LitElement {
     history: { state: true },
     replayIndex: { state: true },
     meanPop: { state: true },
-    forecast: { state: true },
-    forecastGeneration: { state: true }
+    candidates: { state: true }
   };
 
   declare loading: boolean;
@@ -65,8 +71,7 @@ export class QvPlayground extends LitElement {
   declare history: number[];
   declare replayIndex: number;
   declare meanPop: number;
-  declare forecast: ForecastResult | null;
-  declare forecastGeneration: number;
+  declare candidates: CandidateForecast[];
 
   private allEvents: QuakeEvent[] = [];
   /** Exclusive end index of the train prefix within allEvents. */
@@ -76,6 +81,11 @@ export class QvPlayground extends LitElement {
   private lastTick = 0;
   private replaySteps: ReplayStep[] = [];
   private datasetMeta = { source: "", query: "" };
+  /** Session reference date: predictions must land after "today" (UTC) as of load/reset. */
+  private referenceTime = 0;
+  private forecaster: CandidateForecaster | null = null;
+  /** Generation at which each candidate genome (by key) first appeared in the top 3. */
+  private candidateSince = new Map<string, number>();
 
   constructor() {
     super();
@@ -95,8 +105,7 @@ export class QvPlayground extends LitElement {
     this.history = [];
     this.replayIndex = 0;
     this.meanPop = 0;
-    this.forecast = null;
-    this.forecastGeneration = 0;
+    this.candidates = [];
   }
 
   static styles = css`
@@ -273,6 +282,26 @@ export class QvPlayground extends LitElement {
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
+    .swatch {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid;
+      font-size: 0.7rem;
+      font-weight: 700;
+      margin-right: 4px;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-top: 6px;
+      font-size: 0.8rem;
+    }
     table.forecast .sub {
       color: var(--qv-muted, #9aa8bc);
       font-size: 0.74rem;
@@ -321,6 +350,13 @@ export class QvPlayground extends LitElement {
     this.stopLoop();
     this.training = false;
     if (this.allEvents.length < minHistoryIndex() + 4) return;
+    this.referenceTime = startOfNextUtcDay(Date.now());
+    this.forecaster = new CandidateForecaster(this.allEvents, {
+      minMag: BIG_QUAKE_MAG,
+      maxSteps: DEFAULT_LOOKAHEAD_STEPS,
+      referenceTime: this.referenceTime
+    });
+    this.candidateSince.clear();
     this.ga = initPopulation(this.allEvents, this.trainEnd, this.config());
     this.syncFromGa();
     this.refreshHoldoutAndReplay();
@@ -335,6 +371,25 @@ export class QvPlayground extends LitElement {
     const mean =
       this.ga.population.reduce((s, ind) => s + ind.fitness, 0) / this.ga.population.length;
     this.meanPop = mean;
+    this.refreshCandidates();
+  }
+
+  /**
+   * Experimental: top-3 distinct genomes and their next M>6 prediction after today.
+   * Cheap and cached per genome, so it runs every generation; a row only changes when
+   * that candidate's genome changes.
+   */
+  private refreshCandidates(): void {
+    if (!this.ga || !this.forecaster) return;
+    const next = this.forecaster.forecast(topCandidates(this.ga.population, CANDIDATE_COUNT));
+    // "In the top 3 since generation N" — only for the current members.
+    const since = new Map<string, number>();
+    for (const c of next) since.set(c.key, this.candidateSince.get(c.key) ?? this.ga.generation);
+    this.candidateSince = since;
+    const unchanged =
+      next.length === this.candidates.length &&
+      next.every((c, i) => c.key === this.candidates[i].key && c.fitness === this.candidates[i].fitness);
+    if (!unchanged) this.candidates = next;
   }
 
   private refreshHoldoutAndReplay(): void {
@@ -351,12 +406,6 @@ export class QvPlayground extends LitElement {
     const to = Math.min(this.allEvents.length - 1, this.trainEnd + 40);
     this.replaySteps = replayWindow(this.ga.best.genome, this.allEvents, from, to);
     this.replayIndex = 0;
-    // Experimental: roll the current best genome past the catalog end for the top-5 M>6 list
-    this.forecast = forecastBigQuakes(this.ga.best.genome, this.allEvents, {
-      minMag: BIG_QUAKE_MAG,
-      count: 5
-    });
-    this.forecastGeneration = this.ga.generation;
   }
 
   private stopLoop(): void {
@@ -430,77 +479,94 @@ export class QvPlayground extends LitElement {
     return lines.join("\n");
   }
 
-  private renderForecast() {
-    const fc = this.forecast;
+  private renderCandidates() {
     const day = (t: number) => new Date(t).toISOString().slice(0, 10);
-    const stopNote: Record<ForecastResult["stoppedReason"], string> = {
-      found: "",
-      maxSteps: "the rollout step limit was reached",
-      horizon: "the one-year horizon was reached",
-      degenerate: "the rollout saturated (latitude pinned at a pole or magnitude at the M9.5 cap) and was stopped"
+    const hour = (t: number) => new Date(t).toISOString().slice(0, 16).replace("T", " ");
+    const none = (fc: ForecastResult) => {
+      if (fc.stoppedReason === "degenerate") {
+        return "Look-ahead left the data range (latitude at a pole or magnitude at the M9.5 cap).";
+      }
+      const next = fc.nextMag === null ? "" : ` Its next predicted event is M${fc.nextMag.toFixed(2)}.`;
+      return `No M>${BIG_QUAKE_MAG.toFixed(1)} event in its next ${fc.stepsRun} predicted events.${next}`;
     };
+    const lastEvent = this.allEvents.at(-1);
     return html`
       <div class="experimental">
         <strong>${FORECAST_DISCLAIMER}</strong>
-        The current best genome is rolled forward from the last catalog event, feeding each
-        predicted event back in as history. A toy GA on a 2018–2024 snapshot cannot predict
-        real earthquakes.
+        The three fittest distinct genomes in the current population each give one prediction for the
+        next M&gt;${BIG_QUAKE_MAG.toFixed(1)} event after today. A toy linear GA cannot predict real earthquakes.
       </div>
-      ${!fc
-        ? html`<p class="muted">Predictions appear after the population initializes.</p>`
+      ${!this.candidates.length
+        ? html`<p class="muted">Candidates appear after the population initializes.</p>`
         : html`
-            ${fc.forecasts.length
-              ? html`
-                  <table class="forecast">
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Date (UTC)</th>
-                        <th>Location</th>
-                        <th>Mag</th>
-                        <th>Self-score</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${fc.forecasts.map(
-                        (f) => html`
-                          <tr>
-                            <td>${f.rank}</td>
-                            <td>
-                              ${day(f.time)}
-                              <div class="sub">window ${day(f.windowStart)} → ${day(f.windowEnd)}</div>
-                            </td>
-                            <td>
-                              ${f.region}
-                              <div class="sub">
-                                lat ${f.lat.toFixed(1)}, lon ${f.lon.toFixed(1)} · ±${f.radiusKm.toFixed(0)} km
-                              </div>
-                            </td>
-                            <td>M${f.mag.toFixed(2)}</td>
-                            <td>
-                              ${f.score.toFixed(2)}
-                              <div class="sub">step ${f.step}</div>
-                            </td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                  </table>
-                `
-              : html`<p class="muted">
-                  The current best genome predicts no M&gt;${BIG_QUAKE_MAG.toFixed(1)} events in its rollout.
-                </p>`}
+            <table class="forecast">
+              <thead>
+                <tr>
+                  <th>Candidate</th>
+                  <th>Date (UTC)</th>
+                  <th>Location</th>
+                  <th>Mag</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${this.candidates.map((c) => {
+                  const p = c.forecast.prediction;
+                  const color = CANDIDATE_COLORS[c.rank - 1];
+                  const since = this.candidateSince.get(c.key) ?? 0;
+                  const who = html`
+                    <td>
+                      <span class="swatch" style="border-color:${color}">${c.rank}</span>
+                      <span class="sub">#${c.key.slice(-6)}</span>
+                      <div class="sub">fitness ${c.fitness.toFixed(3)} · since gen ${since}</div>
+                    </td>
+                  `;
+                  return p
+                    ? html`
+                        <tr>
+                          ${who}
+                          <td>
+                            ${hour(p.time)}
+                            <div class="sub">window ${day(p.windowStart)} → ${day(p.windowEnd)}</div>
+                          </td>
+                          <td>
+                            ${p.region}
+                            <div class="sub">lat ${p.lat.toFixed(1)}, lon ${p.lon.toFixed(1)} · ±${p.radiusKm.toFixed(0)} km</div>
+                          </td>
+                          <td>M${p.mag.toFixed(2)}</td>
+                          <td>
+                            ${p.score.toFixed(2)}
+                            <div class="sub">look-ahead ${p.step}</div>
+                          </td>
+                        </tr>
+                      `
+                    : html`
+                        <tr>
+                          ${who}
+                          <td colspan="4" class="muted">${none(c.forecast)}</td>
+                        </tr>
+                      `;
+                })}
+              </tbody>
+            </table>
             <p class="muted" style="margin:8px 0 0;font-size:0.8rem">
-              Generation ${this.forecastGeneration} · refreshed every 5 generations while training ·
-              predictions after the last catalog event (${day(fc.anchorTime)}), so dates may already be in the past.
-              ${fc.forecasts.length < 5 && fc.stoppedReason !== "found"
-                ? html`Only ${fc.forecasts.length} found: ${stopNote[fc.stoppedReason]} after ${fc.stepsRun} steps.`
-                : null}
-              Self-score = P(M&gt;${BIG_QUAKE_MAG.toFixed(1)}) under the genome's own magnitude tolerance gene;
-              window and radius come from its time and distance tolerance genes. None of these are calibrated.
+              Predictions are dated after ${day(this.referenceTime - 1)} (UTC); catalog runs to
+              ${lastEvent ? hour(lastEvent.time) : "—"} UTC. Each genome predicts the next event from the real
+              catalog and looks ahead up to ${DEFAULT_LOOKAHEAD_STEPS} predicted events for the first one above
+              M${BIG_QUAKE_MAG.toFixed(1)}; the predicted waiting time is counted from the start of tomorrow.
+              Deterministic: a row changes only when that candidate's genome changes.
+              Score = P(M&gt;${BIG_QUAKE_MAG.toFixed(1)}) under the genome's own magnitude tolerance gene; window and
+              circle radius come from its time and distance tolerance genes. None of these are calibrated.
             </p>
           `}
     `;
+  }
+
+  private mapCandidates(): MapCandidate[] {
+    return this.candidates.flatMap((c) => {
+      const p = c.forecast.prediction;
+      return p ? [{ rank: c.rank, lat: p.lat, lon: p.lon, radiusKm: p.radiusKm }] : [];
+    });
   }
 
   private currentReplay(): ReplayStep | null {
@@ -600,8 +666,8 @@ export class QvPlayground extends LitElement {
           </section>
 
           <section class="panel">
-            <h2>Next 5 predicted M&gt;${BIG_QUAKE_MAG.toFixed(1)} events (experimental)</h2>
-            ${this.renderForecast()}
+            <h2>Top ${CANDIDATE_COUNT} candidates: next M&gt;${BIG_QUAKE_MAG.toFixed(1)} event after today (experimental)</h2>
+            ${this.renderCandidates()}
           </section>
 
           <section class="panel">
@@ -610,12 +676,21 @@ export class QvPlayground extends LitElement {
               .events=${this.allEvents}
               .highlight=${highlight}
               .prediction=${prediction}
-              .forecasts=${this.forecast?.forecasts ?? []}
+              .candidates=${this.mapCandidates()}
             ></qv-quake-map>
             <p class="muted" style="margin:8px 0 0;font-size:0.8rem">
               Blue dots = historical M≥5.5 events. Yellow ring = model prediction; green = actual next event (replay).
-              Numbered red diamonds = experimental top-5 M&gt;${BIG_QUAKE_MAG.toFixed(1)} rollout (not a forecast).
+              Circles = experimental candidate predictions (radius = that genome's location tolerance, in km).
             </p>
+            <div class="legend">
+              ${this.candidates.map(
+                (c) => html`<span
+                  ><span class="swatch" style="border-color:${CANDIDATE_COLORS[c.rank - 1]}">${c.rank}</span>
+                  Candidate ${c.rank}${c.forecast.prediction ? "" : " (no M>6 prediction)"}</span
+                >`
+              )}
+              <span class="muted">${FORECAST_DISCLAIMER}</span>
+            </div>
           </section>
 
           <section class="panel">

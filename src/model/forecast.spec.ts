@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { MS_PER_DAY, type QuakeEvent } from "../data/types.js";
+import { MS_PER_DAY, MS_PER_HOUR, type QuakeEvent } from "../data/types.js";
 import { FEATURE_DIM } from "../features/extract.js";
-import { initPopulation, evolveOneGeneration, rngFrom, DEFAULT_GA_CONFIG } from "../ga/evolve.js";
 import { GENOME_LENGTH, HEAD_COUNT, WEIGHTS_PER_HEAD, type Genome } from "./genome.js";
 import {
   BIG_QUAKE_MAG,
+  DEFAULT_LOOKAHEAD_STEPS,
   FORECAST_DISCLAIMER,
   exceedanceScore,
-  forecastBigQuakes
+  forecastNextBigQuake,
+  startOfNextUtcDay
 } from "./forecast.js";
 
 function catalog(n: number): QuakeEvent[] {
   const out: QuakeEvent[] = [];
-  let t = Date.UTC(2024, 0, 1);
+  let t = Date.UTC(2026, 8, 1);
   for (let i = 0; i < n; i++) {
     out.push({
       id: `c${i}`,
@@ -22,22 +23,25 @@ function catalog(n: number): QuakeEvent[] {
       mag: 5.5 + (i % 4) * 0.2,
       place: i % 2 === 0 ? `${10 + i} km NE of Testville, Tonga` : undefined
     });
-    t += 12 * 3_600_000;
+    t += 12 * MS_PER_HOUR;
   }
   return out;
 }
 
-/** Constant-output genome: bias-only heads (predict() does not clamp genes). */
-function biasGenome(b: { logHours: number; dLat: number; dLon: number; mag: number }): Genome {
+/** Bias-only heads (predict() does not clamp genes); optional weight on the `mag` feature. */
+function biasGenome(b: { logHours: number; dLat: number; dLon: number; mag: number; magFromMag?: number }): Genome {
   const genes = new Float64Array(GENOME_LENGTH);
   const biases = [b.logHours, b.dLat, b.dLon, b.mag];
   for (let h = 0; h < HEAD_COUNT; h++) genes[h * WEIGHTS_PER_HEAD + FEATURE_DIM] = biases[h];
+  genes[3 * WEIGHTS_PER_HEAD + 0] = b.magFromMag ?? 0;
   const base = HEAD_COUNT * WEIGHTS_PER_HEAD;
   genes[base] = 0.5; // timeTol (log-hours)
   genes[base + 1] = 5; // → 500 km
   genes[base + 2] = 0.5; // magTol
   return { genes };
 }
+
+const DAY_GAP = Math.log1p(24);
 
 describe("exceedanceScore", () => {
   it("is 0.5 at the threshold and monotonic in magnitude", () => {
@@ -49,126 +53,99 @@ describe("exceedanceScore", () => {
   });
 });
 
-describe("forecastBigQuakes", () => {
-  it("returns the next 5 M>6 predictions after the catalog end, sorted by date", () => {
-    const events = catalog(40);
-    const genome = biasGenome({ logHours: Math.log1p(24), dLat: 0, dLon: 0.5, mag: 6.5 });
-    const res = forecastBigQuakes(genome, events);
-    const end = events.at(-1)!.time;
+describe("startOfNextUtcDay", () => {
+  it("returns midnight UTC of the following day", () => {
+    expect(startOfNextUtcDay(Date.UTC(2026, 8, 27, 10, 59))).toBe(Date.UTC(2026, 8, 28));
+    expect(startOfNextUtcDay(Date.UTC(2026, 8, 27))).toBe(Date.UTC(2026, 8, 28));
+    expect(startOfNextUtcDay(Date.UTC(2026, 11, 31, 23, 59))).toBe(Date.UTC(2027, 0, 1));
+  });
+});
 
-    expect(res.anchorTime).toBe(end);
-    expect(res.stoppedReason).toBe("found");
-    expect(res.forecasts).toHaveLength(5);
-    res.forecasts.forEach((f, i) => {
-      expect(f.rank).toBe(i + 1);
-      expect(f.step).toBe(i + 1);
-      expect(f.time).toBeGreaterThan(end);
-      expect(f.mag).toBeGreaterThan(BIG_QUAKE_MAG);
-      expect(f.windowStart).toBeLessThanOrEqual(f.time);
-      expect(f.windowEnd).toBeGreaterThanOrEqual(f.time);
-      expect(f.radiusKm).toBeCloseTo(500);
-      expect(f.score).toBeGreaterThan(0.5);
-      expect(f.score).toBeLessThanOrEqual(1);
-      expect(f.region).toMatch(/Testville, Tonga/);
-      if (i > 0) expect(f.time).toBeGreaterThanOrEqual(res.forecasts[i - 1].time);
+describe("forecastNextBigQuake", () => {
+  const events = catalog(30);
+  const last = events.at(-1)!;
+
+  it("dates the prediction from the reference date (after today)", () => {
+    const ref = last.time + 3 * MS_PER_DAY;
+    const res = forecastNextBigQuake(biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0.5, mag: 6.5 }), events, {
+      referenceTime: ref
     });
-    // One day apart, starting one day after the last catalog event.
-    expect(res.forecasts[0].time - end).toBeCloseTo(MS_PER_DAY, -3);
-    expect(res.forecasts[0].lon).toBeCloseTo(events.at(-1)!.lon + 0.5);
+    expect(res.stoppedReason).toBe("found");
+    expect(res.anchorTime).toBe(ref);
+    expect(res.lastEventTime).toBe(last.time);
+    expect(res.nextMag).toBeCloseTo(6.5);
+    const p = res.prediction!;
+    expect(p.step).toBe(1);
+    expect(p.time).toBeCloseTo(ref + MS_PER_DAY, -3);
+    expect(p.time).toBeGreaterThan(ref);
+    expect(p.windowStart).toBeGreaterThanOrEqual(ref);
+    expect(p.windowStart).toBeLessThanOrEqual(p.time);
+    expect(p.windowEnd).toBeGreaterThanOrEqual(p.time);
+    expect(p.lat).toBeCloseTo(last.lat);
+    expect(p.lon).toBeCloseTo(last.lon + 0.5);
+    expect(p.mag).toBeGreaterThan(BIG_QUAKE_MAG);
+    expect(p.radiusKm).toBeCloseTo(500);
+    expect(p.score).toBeGreaterThan(0.5);
+    expect(p.region).toMatch(/Testville, Tonga/);
   });
 
-  it("does not mutate the input catalog", () => {
-    const events = catalog(30);
+  it("anchors on the last event when there is no (or an earlier) reference date", () => {
+    const g = biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 7 });
+    expect(forecastNextBigQuake(g, events).prediction!.time).toBeCloseTo(last.time + MS_PER_DAY, -3);
+    const early = forecastNextBigQuake(g, events, { referenceTime: last.time - MS_PER_DAY });
+    expect(early.anchorTime).toBe(last.time);
+  });
+
+  it("looks ahead through smaller predicted events to the first one above M6", () => {
+    // mag_next = mag_last + 0.2 → last catalog mag 5.7 → 5.9 → 6.1
+    const g = biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 1, mag: 0.2, magFromMag: 1 });
+    const ref = last.time + MS_PER_DAY;
+    const res = forecastNextBigQuake(g, events, { referenceTime: ref });
+    const p = res.prediction!;
+    expect(p.step).toBe(2);
+    expect(p.mag).toBeCloseTo(6.1);
+    expect(res.nextMag).toBeCloseTo(5.9);
+    expect(p.time).toBeCloseTo(ref + 2 * MS_PER_DAY, -3);
+    expect(p.windowStart).toBeGreaterThan(ref + MS_PER_DAY - 1);
+    expect(p.lon).toBeCloseTo(last.lon + 2);
+  });
+
+  it("reports honestly when no M>6 event is predicted within the look-ahead", () => {
+    const res = forecastNextBigQuake(biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 5.8 }), events);
+    expect(res.prediction).toBeNull();
+    expect(res.stoppedReason).toBe("belowThreshold");
+    expect(res.stepsRun).toBe(DEFAULT_LOOKAHEAD_STEPS);
+    expect(res.nextMag).toBeCloseTo(5.8);
+    expect(forecastNextBigQuake(biasGenome({ logHours: 1, dLat: 0, dLon: 0, mag: 6.5 }), events, { minMag: 7 }).prediction).toBeNull();
+  });
+
+  it("stops when the look-ahead degenerates (pole or magnitude cap)", () => {
+    const pole = forecastNextBigQuake(biasGenome({ logHours: 1, dLat: 40, dLon: 0, mag: 5 }), events);
+    expect(pole.stoppedReason).toBe("degenerate");
+    expect(pole.stepsRun).toBe(3);
+    const cap = forecastNextBigQuake(biasGenome({ logHours: 1, dLat: 0, dLon: 0, mag: 12 }), events);
+    expect(cap.stoppedReason).toBe("degenerate");
+    expect(cap.stepsRun).toBe(1);
+    expect(cap.prediction).toBeNull();
+  });
+
+  it("is deterministic and does not mutate the catalog", () => {
     const copy = events.map((e) => ({ ...e }));
-    forecastBigQuakes(biasGenome({ logHours: 3, dLat: 0, dLon: 0, mag: 7 }), events);
+    const g = biasGenome({ logHours: 2, dLat: 0.3, dLon: -0.4, mag: 0.25, magFromMag: 1 });
+    const opts = { referenceTime: Date.UTC(2026, 8, 28) };
+    const a = forecastNextBigQuake(g, events, opts);
+    const b = forecastNextBigQuake(g, events, opts);
+    expect(a).toEqual(b);
     expect(events).toEqual(copy);
   });
 
-  it("returns nothing when the model never predicts above the threshold", () => {
-    const res = forecastBigQuakes(
-      biasGenome({ logHours: Math.log1p(12), dLat: 0, dLon: 0, mag: 5.8 }),
-      catalog(30),
-      { maxSteps: 50 }
-    );
-    expect(res.forecasts).toHaveLength(0);
-    expect(res.stoppedReason).toBe("maxSteps");
-    expect(res.stepsRun).toBe(50);
-  });
-
-  it("honours minMag, count and notBefore", () => {
-    const events = catalog(30);
-    const genome = biasGenome({ logHours: Math.log1p(24), dLat: 0, dLon: 0, mag: 6.5 });
-    const end = events.at(-1)!.time;
-    const res = forecastBigQuakes(genome, events, {
-      count: 3,
-      minMag: 6.2,
-      notBefore: end + 10 * MS_PER_DAY
-    });
-    expect(res.forecasts).toHaveLength(3);
-    expect(res.forecasts[0].time).toBeGreaterThan(end + 10 * MS_PER_DAY);
-    expect(res.forecasts[0].step).toBe(11);
-
-    const none = forecastBigQuakes(genome, events, { minMag: 7 });
-    expect(none.forecasts).toHaveLength(0);
-  });
-
-  it("excludes predictions at the catalog end (zero time gap)", () => {
-    const res = forecastBigQuakes(
-      biasGenome({ logHours: 0, dLat: 0, dLon: 0, mag: 7 }),
-      catalog(30),
-      { maxSteps: 20 }
-    );
-    expect(res.forecasts).toHaveLength(0);
-  });
-
-  it("stops at the horizon", () => {
-    const res = forecastBigQuakes(
-      biasGenome({ logHours: Math.log1p(24 * 60), dLat: 0, dLon: 0, mag: 5 }),
-      catalog(30),
-      { horizonDays: 100 }
-    );
-    expect(res.stoppedReason).toBe("horizon");
-    expect(res.stepsRun).toBe(2);
-  });
-
-  it("stops when the rollout degenerates to a pole", () => {
-    const res = forecastBigQuakes(
-      biasGenome({ logHours: Math.log1p(6), dLat: 40, dLon: 0, mag: 7 }),
-      catalog(30)
-    );
-    expect(res.stoppedReason).toBe("degenerate");
-    expect(res.forecasts.every((f) => Math.abs(f.lat) < 89.9)).toBe(true);
-    expect(res.forecasts.length).toBeLessThan(5);
-  });
-
-  it("stops when magnitude saturates at the output cap", () => {
-    const res = forecastBigQuakes(
-      biasGenome({ logHours: Math.log1p(6), dLat: 0, dLon: 0, mag: 12 }),
-      catalog(30)
-    );
-    expect(res.stoppedReason).toBe("degenerate");
-    expect(res.stepsRun).toBe(1);
-    expect(res.forecasts).toHaveLength(0);
-  });
-
   it("handles an empty catalog", () => {
-    const res = forecastBigQuakes(biasGenome({ logHours: 1, dLat: 0, dLon: 0, mag: 7 }), []);
-    expect(res.forecasts).toEqual([]);
-    expect(res.stepsRun).toBe(0);
+    const res = forecastNextBigQuake(biasGenome({ logHours: 1, dLat: 0, dLon: 0, mag: 7 }), [], { referenceTime: 5 });
+    expect(res).toMatchObject({ prediction: null, stoppedReason: "empty", stepsRun: 0, anchorTime: 5 });
+    expect(forecastNextBigQuake(biasGenome({ logHours: 1, dLat: 0, dLon: 0, mag: 7 }), []).anchorTime).toBe(0);
   });
 
-  it("works with an evolved best genome and labels itself experimental", () => {
-    const events = catalog(80);
-    const rng = rngFrom(4);
-    const cfg = { ...DEFAULT_GA_CONFIG, populationSize: 12 };
-    let state = initPopulation(events, 60, cfg, rng);
-    state = evolveOneGeneration(state, events, 60, cfg, rng);
-    const res = forecastBigQuakes(state.best.genome, events, { maxSteps: 60 });
-    expect(res.forecasts.length).toBeLessThanOrEqual(5);
-    for (const f of res.forecasts) {
-      expect(f.mag).toBeGreaterThan(6);
-      expect(f.time).toBeGreaterThan(res.anchorTime);
-    }
+  it("labels itself experimental", () => {
     expect(FORECAST_DISCLAIMER).toMatch(/Experimental.*Not a real earthquake forecast/);
   });
 });

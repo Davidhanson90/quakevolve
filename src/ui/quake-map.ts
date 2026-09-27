@@ -1,28 +1,62 @@
 import { LitElement, css, html } from "lit";
 import type { QuakeEvent } from "../data/types.js";
 import type { Prediction } from "../model/genome.js";
-import type { QuakeForecast } from "../model/forecast.js";
+
+/** Distinct colours for candidate 1/2/3 (shared with the playground legend). */
+export const CANDIDATE_COLORS = ["#ff5c8a", "#b388ff", "#ff9f43"] as const;
+
+export interface MapCandidate {
+  rank: number;
+  lat: number;
+  lon: number;
+  /** Real geographic radius in km (drawn as a geodesic circle). */
+  radiusKm: number;
+}
+
+const EARTH_RADIUS_KM = 6371;
+
+/**
+ * Points of a geodesic circle (destination-point formula). Longitudes are unwrapped around
+ * the centre so the ring stays continuous across the antimeridian.
+ */
+export function geodesicCircle(lat: number, lon: number, radiusKm: number, segments = 72): [number, number][] {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const toDeg = (r: number) => (r * 180) / Math.PI;
+  const φ1 = toRad(lat);
+  const λ1 = toRad(lon);
+  const δ = radiusKm / EARTH_RADIUS_KM;
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= segments; i++) {
+    const θ = (2 * Math.PI * i) / segments;
+    const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ));
+    const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
+    let dLon = toDeg(λ2) - lon;
+    dLon = ((((dLon + 180) % 360) + 360) % 360) - 180;
+    pts.push([toDeg(φ2), lon + dLon]);
+  }
+  return pts;
+}
 
 export class QvQuakeMap extends LitElement {
   static properties = {
     events: { attribute: false },
     highlight: { attribute: false },
     prediction: { attribute: false },
-    forecasts: { attribute: false }
+    candidates: { attribute: false }
   };
 
   declare events: QuakeEvent[];
   declare highlight: QuakeEvent | null;
   declare prediction: Prediction | null;
-  /** Experimental top-N rollout points (drawn as numbered diamonds). */
-  declare forecasts: QuakeForecast[];
+  /** Experimental candidate predictions, drawn as geodesic circles. */
+  declare candidates: MapCandidate[];
 
   constructor() {
     super();
     this.events = [];
     this.highlight = null;
     this.prediction = null;
-    this.forecasts = [];
+    this.candidates = [];
   }
 
   static styles = css`
@@ -100,23 +134,36 @@ export class QvQuakeMap extends LitElement {
       ctx.fill();
     }
 
-    for (const f of this.forecasts ?? []) {
-      const { x, y } = this.project(f.lat, f.lon, w, h);
-      const s = 6;
-      ctx.strokeStyle = "#ff6b8a";
-      ctx.fillStyle = "rgba(255, 107, 138, 0.3)";
-      ctx.lineWidth = 1.5;
+    for (const c of this.candidates ?? []) {
+      const color = CANDIDATE_COLORS[(c.rank - 1) % CANDIDATE_COLORS.length];
+      const ring = geodesicCircle(c.lat, c.lon, c.radiusKm).map(([la, lo]) => this.project(la, lo, w, h));
+      const centre = this.project(c.lat, c.lon, w, h);
+      // Draw at -w, 0, +w so rings crossing the antimeridian wrap onto the other edge.
+      for (const shift of [-w, 0, w]) {
+        ctx.beginPath();
+        ring.forEach((pt, k) => (k === 0 ? ctx.moveTo(pt.x + shift, pt.y) : ctx.lineTo(pt.x + shift, pt.y)));
+        ctx.closePath();
+        ctx.fillStyle = `${color}26`;
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.moveTo(x, y - s);
-      ctx.lineTo(x + s, y);
-      ctx.lineTo(x, y + s);
-      ctx.lineTo(x - s, y);
-      ctx.closePath();
+      ctx.arc(centre.x, centre.y, 2.5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#ffd1dc";
-      ctx.font = "10px ui-monospace, monospace";
-      ctx.fillText(String(f.rank), x + s + 2, y - s + 2);
+      // Label just outside the ring at a rank-specific bearing so overlapping circles stay readable.
+      const bearing = ((c.rank - 1) * 120 * Math.PI) / 180;
+      const edge = ring[Math.round(((c.rank - 1) * 120) / 5) % ring.length];
+      const lx = edge.x + Math.sin(bearing) * 8;
+      const ly = edge.y - Math.cos(bearing) * 8;
+      ctx.font = "bold 12px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(c.rank), lx, ly);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
     }
 
     if (this.highlight) {
