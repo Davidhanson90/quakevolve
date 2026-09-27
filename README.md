@@ -23,7 +23,7 @@ No TensorFlow.js, no API keys, no backend. Pure TypeScript + Lit + Vite. The cat
 3. Hit **Train** — watch generation count, best train fitness, and the fitness chart climb
 4. Compare **holdout** soft-score (yellow dashed line) as a reality check
 5. On the map: yellow ring = model’s next-event guess, green = actual next event during replay
-6. Watch the **Next 5 predicted M>6.0 events (experimental)** panel update as the GA evolves
+6. Watch the **Top 3 candidates (experimental)** panel and the coloured circles on the map update as the GA evolves
 7. **Pause** / **Reset** as needed
 
 ## Quick start
@@ -42,6 +42,7 @@ npm test           # vitest
 npm run lint       # eslint
 npm run build      # typecheck + production Vite build → dist/
 npm run build:verify
+npm run data:update  # refresh public/data/earthquakes.json from USGS (2018-01-01 → now, M≥5.5)
 ```
 
 ## Algorithm summary
@@ -60,45 +61,60 @@ npm run build:verify
 
 **Fitness:** weighted soft scores — time 35%, region (haversine) 40%, magnitude 25% — averaged over the train window. Holdout uses the later 30% of the timeline.
 
-## Experimental: next 5 predicted M>6.0 events
+## Experimental: top 3 candidates, next M>6.0 event after today
 
-> **Experimental model output. Not a real earthquake forecast.** A linear toy model evolved on a
-> 2018–2024 snapshot cannot predict real earthquakes. This panel exists to show what the genome
-> “believes”, and how quickly that falls apart once it has to feed on its own guesses.
+> **Experimental. Not a real earthquake forecast.** A linear toy model evolved with a genetic
+> algorithm cannot predict real earthquakes. This panel shows what the fittest genomes “believe”.
 
-While training (every 5 generations, and on Pause/Reset) the current best genome is **rolled forward**
-from the last catalog event: predict the next event, append it to the history as if it happened,
-predict again (up to 250 steps / one year). Predicted events with magnitude **> 6.0** that fall after
-the last catalog event are sorted by date and the first five are shown in the UI panel and as numbered
-red diamonds on the map (`src/model/forecast.ts`).
+Every generation, the three fittest **distinct** genomes in the population (`topCandidates`,
+`src/model/candidates.ts`) each give **one** prediction (`forecastNextBigQuake`, `src/model/forecast.ts`):
 
-Each row shows:
+1. Predict the next event from the real catalog. If it is not above M6.0, append it as if it happened
+   and predict again, looking ahead at most **10** predicted events (long chains drift).
+2. The first predicted event above M6.0 is the candidate’s prediction. Its predicted waiting time is
+   counted from the **start of tomorrow (UTC)** rather than from the last catalog event — the catalog runs
+   up to today, so the quiet time since the last event is treated as memoryless — which means every
+   prediction is dated **after today**.
+3. If nothing above M6.0 turns up (or the look-ahead degenerates to a pole / the M9.5 cap), the row says
+   so instead of inventing one.
+
+**Consistent:** there is no randomness at forecast time. Results are cached by a hash of the genome’s
+genes, so a candidate’s row only changes when the top-3 membership or a genome actually changes. The
+reference date (“tomorrow”) is fixed when the page loads or you press Reset.
 
 | Column | Meaning |
 |--------|---------|
+| Candidate | Rank 1–3 (colour), short genome id, train fitness, generation it entered the top 3 |
 | Date (UTC) | Predicted time, plus a window from the genome’s time-tolerance gene |
-| Location | lat/lon, a region name taken from the nearest real catalog event’s USGS `place` (offline), and a radius from the distance-tolerance gene |
+| Location | Region name from the nearest real catalog event’s USGS `place` (offline), lat/lon, and the genome’s location tolerance |
 | Mag | Predicted magnitude |
-| Self-score | P(M > 6.0) if magnitude errors followed the Laplace kernel the genome is scored with (scale = magnitude-tolerance gene). **Not calibrated.** Also shows the rollout step. |
+| Score | P(M > 6.0) if magnitude errors followed the Laplace kernel the genome is scored with (scale = magnitude-tolerance gene). **Not calibrated.** |
 
-Caveats: the catalog ends on 2024-12-30, so “upcoming” dates are right after that and may already be
-in the past. Rollouts drift (location walks, magnitudes escalate), so the rollout stops early if latitude
-hits a pole or magnitude hits the M9.5 cap. Fewer than five rows (or none) is a normal result.
+On the map each prediction is a **geodesic circle** (real km, not pixels) centred on the predicted location,
+with radius = that genome’s location tolerance, coloured 1/2/3 as in the legend.
+
+Caveat: the evolved magnitude head is weak (it often predicts small next events), so “no M>6.0 prediction”
+rows are common and expected.
 
 ## Dataset
 
 | Field | Value |
 |-------|-------|
 | Source | [USGS FDSN event API](https://earthquake.usgs.gov/fdsnws/event/1/) (public catalog) |
-| Filters | `minmagnitude=5.5`, `starttime=2018-01-01`, `endtime=2024-12-31`, global |
-| Bundled file | `public/data/earthquakes.json` (~3.2k events, &lt; 400 KB) |
+| Filters | `minmagnitude=5.5`, `starttime=2018-01-01`, `endtime` = time of the last refresh, global |
+| Bundled file | `public/data/earthquakes.json` (~4.1k events to 2026-09-26, &lt; 500 KB) |
 | Fields kept | `id, time, lat, lon, mag, place` sorted by time |
 
-Re-fetch example (optional; commit the snapshot for Pages):
+Refresh the snapshot (commit the result for Pages):
 
 ```bash
-curl -fsSL "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime=2018-01-01&endtime=2024-12-31&minmagnitude=5.5" -o /tmp/eq.geojson
+npm run data:update                           # 2018-01-01 → now
+npm run data:update -- --end 2026-09-27T10:59:00
 ```
+
+`scripts/update-earthquakes.mjs` queries the USGS FDSN event service (GeoJSON, `orderby=time-asc`) and
+writes the same compact format. The train/holdout split stays chronological 70/30, so holdout covers the
+most recent ~30% of events.
 
 ## Tech stack
 
