@@ -1024,7 +1024,7 @@ export class QvPlayground extends LitElement {
               M≥${this.minMag.toFixed(1)} event in the catalog's last ${RECENT_PREDICTION_DAYS} days (each made from the history
               before it). Yellow ring = current replay prediction; green = the actual event it was predicting.
               Circles = experimental candidate predictions (radius = the fixed ${SCORE_TOLERANCES.distKm} km location tolerance).
-              Pink star + white crosshair and dashed ${SCORE_TOLERANCES.distKm} km ring = the banner's headline (biggest of
+              Pink star in a white crosshair with a white ${SCORE_TOLERANCES.distKm} km ring (true scale) = the banner's headline (biggest of
               the best genome's next ${BANNER_LOOKAHEAD_STEPS} predicted events), updated together with the banner.
             </p>
             <div class="legend">
