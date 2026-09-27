@@ -312,11 +312,14 @@ export class QvQuakeMap extends LitElement {
     // Ring radius on screen: 300 km is only ~5 px at this map scale near the equator, so the ring
     // is drawn on top of the star (dashed only once it's big enough for dashes to read).
     const ringPx = Math.max(...ring.map((p) => Math.hypot(p.x - c.x, p.y - c.y)));
+    const ringDy = Math.max(...ring.map((p) => Math.abs(p.y - c.y)));
     for (const shift of wrapOffsets(c.x, reach, w)) {
       const x = c.x + shift;
       const y = c.y;
       // Crosshair arms (dark halo first so it reads on bright dots), with a gap around the star.
-      const gap = Math.max(9, ringPx + 3);
+      // Arms hug the star; near the poles the ring is a wide flat ellipse, so size the gap from its
+      // (small) vertical radius and cap it so the arms never float away from the centre.
+      const gap = Math.min(14, Math.max(9, ringDy + 3));
       const arm = gap + 8;
       const arms: [number, number, number, number][] = [
         [x - arm, y, x - gap, y],
