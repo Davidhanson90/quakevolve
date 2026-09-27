@@ -3,16 +3,20 @@ import { LitElement, css, html } from "lit";
 export class QvFitnessChart extends LitElement {
   static properties = {
     history: { attribute: false },
-    holdout: { type: Number }
+    holdout: { type: Number },
+    baseline: { type: Number }
   };
 
   declare history: number[];
   declare holdout: number;
+  /** No-learning baseline score on the holdout (0 = hidden). */
+  declare baseline: number;
 
   constructor() {
     super();
     this.history = [];
     this.holdout = 0;
+    this.baseline = 0;
   }
 
   static styles = css`
@@ -41,7 +45,7 @@ export class QvFitnessChart extends LitElement {
     ctx.clearRect(0, 0, w, h);
 
     const hist = this.history.length ? this.history : [0];
-    const maxY = Math.max(0.2, ...hist, this.holdout, 0.01);
+    const maxY = Math.max(0.2, ...hist, this.holdout, this.baseline, 0.01);
     const minY = 0;
 
     // Holdout reference line
@@ -57,6 +61,22 @@ export class QvFitnessChart extends LitElement {
       ctx.fillStyle = "rgba(240, 180, 41, 0.9)";
       ctx.font = "11px system-ui";
       ctx.fillText("holdout", w - 58, Math.max(12, y - 4));
+    }
+
+    // No-learning baseline reference line
+    if (this.baseline > 0) {
+      const y = h - ((this.baseline - minY) / (maxY - minY)) * (h - 16) - 8;
+      ctx.strokeStyle = "rgba(154, 168, 188, 0.85)";
+      ctx.setLineDash([1, 3]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(8, y);
+      ctx.lineTo(w - 8, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(154, 168, 188, 0.95)";
+      ctx.font = "11px system-ui";
+      ctx.fillText("baseline", 12, Math.max(12, y - 4));
     }
 
     ctx.strokeStyle = "#5b9dff";

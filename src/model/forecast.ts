@@ -1,7 +1,8 @@
 import { describeLocation } from "../data/places.js";
 import { MS_PER_HOUR, type QuakeEvent } from "../data/types.js";
 import { extractFeatures, hoursFromLog } from "../features/extract.js";
-import { PRED_MAG_MAX, decodeTolerances, predict, type Genome } from "./genome.js";
+import { PRED_MAG_MAX, predict, type Genome } from "./genome.js";
+import { SCORE_TOLERANCES } from "./scoring-config.js";
 
 /**
  * EXPERIMENTAL: ask a genome for its next predicted "big" event after a reference date.
@@ -41,7 +42,7 @@ export interface QuakeForecast {
   step: number;
   /** Predicted time (epoch ms, UTC). */
   time: number;
-  /** Date window implied by the genome's own time tolerance gene. */
+  /** Date window: ± the fixed time tolerance (1 log-hour unit) around the predicted gap. */
   windowStart: number;
   windowEnd: number;
   lat: number;
@@ -49,11 +50,11 @@ export interface QuakeForecast {
   mag: number;
   /** Readable region derived from the nearest real catalog event. */
   region: string;
-  /** Location tolerance radius (km) from the genome's distance gene. */
+  /** Fixed location tolerance radius (km) used by the scorer. */
   radiusKm: number;
   /**
    * Model self-score: P(M ≥ minMag) if magnitude errors followed the Laplace kernel the
-   * genome is scored with (scale = magTol gene). Not a calibrated probability.
+   * genome is scored with (scale = the fixed magnitude tolerance). Not a calibrated probability.
    */
   score: number;
 }
@@ -122,7 +123,7 @@ export function forecastNextBigQuake(
 
   const lastEventTime = events[events.length - 1].time;
   const anchorTime = Math.max(lastEventTime, options.referenceTime ?? lastEventTime);
-  const tol = decodeTolerances(genome);
+  const tol = { timeTol: SCORE_TOLERANCES.timeLogHours, distTolKm: SCORE_TOLERANCES.distKm, magTol: SCORE_TOLERANCES.mag };
   const history = events.slice();
   let nextMag: number | null = null;
   let stoppedReason: ForecastStopReason = "belowThreshold";
@@ -215,7 +216,7 @@ export function forecastBiggestQuake(
 
   const lastEventTime = events[events.length - 1].time;
   const anchorTime = Math.max(lastEventTime, options.referenceTime ?? lastEventTime);
-  const tol = decodeTolerances(genome);
+  const tol = { timeTol: SCORE_TOLERANCES.timeLogHours, distTolKm: SCORE_TOLERANCES.distKm, magTol: SCORE_TOLERANCES.mag };
   const history = events.slice();
   const chainMags: number[] = [];
   let best: Omit<ChainForecast, "region"> | null = null;

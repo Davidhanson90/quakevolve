@@ -25,15 +25,12 @@ function catalog(n: number, floor = 4.5, place = "Testville, Tonga"): QuakeEvent
   return out;
 }
 
-function biasGenome(mag: number, timeTol = 0.5, dLat = 0, magFromMag = 0): Genome {
+/** `nudge` perturbs the gap bias by a negligible amount: a different genome, same displayed prediction. */
+function biasGenome(mag: number, nudge = 0, dLat = 0, magFromMag = 0): Genome {
   const genes = new Float64Array(GENOME_LENGTH);
-  const biases = [Math.log1p(24), dLat, 0, mag];
+  const biases = [Math.log1p(24) + nudge, dLat, 0, mag];
   for (let h = 0; h < HEAD_COUNT; h++) genes[h * WEIGHTS_PER_HEAD + FEATURE_DIM] = biases[h];
   genes[3 * WEIGHTS_PER_HEAD + 0] = magFromMag; // weight on the current-magnitude feature
-  const base = HEAD_COUNT * WEIGHTS_PER_HEAD;
-  genes[base] = timeTol;
-  genes[base + 1] = 5;
-  genes[base + 2] = 0.5;
   return { genes };
 }
 
@@ -77,14 +74,14 @@ describe("BannerTracker: biggest event in the next 30 predicted events", () => {
     expect(bannerChainNote(flat.state.snapshot!.forecast)).toBe("#1 of 30 in the chain");
     // Creeping up 0.07 per step from M5.1 → the last step (M7.2) is the biggest.
     const up = new BannerTracker();
-    up.offer(input(biasGenome(0.07, 0.5, 0, 1), events));
+    up.offer(input(biasGenome(0.07, 0, 0, 1), events));
     const p = up.state.snapshot!.forecast.prediction!;
     expect(p.step).toBe(30);
     expect(p.mag).toBeCloseTo(5.1 + 30 * 0.07);
     expect(bannerChainNote(up.state.snapshot!.forecast)).toBe("#30 of 30 in the chain");
     // Drifting down 0.05 per step → the first step is the biggest.
     const down = new BannerTracker();
-    down.offer(input(biasGenome(-0.05, 0.5, 0, 1), events));
+    down.offer(input(biasGenome(-0.05, 0, 0, 1), events));
     expect(down.state.snapshot!.forecast.prediction!.step).toBe(1);
     expect(down.state.snapshot!.forecast.prediction!.mag).toBeCloseTo(5.05);
   });
@@ -92,7 +89,7 @@ describe("BannerTracker: biggest event in the next 30 predicted events", () => {
   it("chain running off the map: biggest of the valid steps, else a clear fallback", () => {
     // dLat +40 per step from lat -16 → 24, 64, then pinned at the pole on step 3.
     const tr = new BannerTracker();
-    tr.offer(input(biasGenome(0.07, 0.5, 40, 1), catalog(40, 4.5)));
+    tr.offer(input(biasGenome(0.07, 0, 40, 1), catalog(40, 4.5)));
     const fc = tr.state.snapshot!.forecast;
     expect(fc.stoppedReason).toBe("degenerate");
     expect(fc.chainMags).toHaveLength(2);
@@ -154,14 +151,14 @@ describe("BannerTracker: throttling and change detection", () => {
     const c = clock();
     const events = catalog(40);
     const tr = new BannerTracker(BANNER_THROTTLE_MS, c.now);
-    tr.offer(input(biasGenome(6.2, 0.5), events));
+    tr.offer(input(biasGenome(6.2, 0), events));
     const v = tr.state.snapshot!.version;
     c.advance(BANNER_THROTTLE_MS);
-    // Different genome (time-tolerance gene), same predicted time/mag/place → no flash.
-    expect(tr.offer(input(biasGenome(6.2, 0.9), events))).toBe(true);
+    // Different genome (a negligible gap-bias nudge), same predicted time/mag/place → no flash.
+    expect(tr.offer(input(biasGenome(6.2, 1e-9), events))).toBe(true);
     expect(tr.state.snapshot!.version).toBe(v);
     c.advance(BANNER_THROTTLE_MS);
-    tr.offer(input(biasGenome(6.2, 0.9, 5), events));
+    tr.offer(input(biasGenome(6.2, 1e-9, 5), events));
     expect(tr.state.snapshot!.version).toBe(v + 1);
   });
 });

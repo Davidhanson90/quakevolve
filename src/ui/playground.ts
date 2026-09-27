@@ -20,7 +20,9 @@ import {
   hoursFromLog,
   minHistoryIndex
 } from "../features/extract.js";
-import { HEAD_COUNT, WEIGHTS_PER_HEAD, decodeTolerances, type Genome } from "../model/genome.js";
+import { HEAD_COUNT, WEIGHTS_PER_HEAD, type Genome } from "../model/genome.js";
+import { MAG_WEIGHT, SCORE_TOLERANCES, SCORE_WEIGHTS } from "../model/scoring-config.js";
+import { evaluateBaseline, fitBaseline, skillVsBaseline, type BaselineParams } from "../model/baseline.js";
 import { evaluateFitness, replayWindow, type ReplayStep } from "../model/score.js";
 import {
   DEFAULT_LOOKAHEAD_STEPS,
@@ -63,6 +65,8 @@ export class QvPlayground extends LitElement {
     generation: { state: true },
     bestTrain: { state: true },
     holdoutScore: { state: true },
+    baselineTrain: { state: true },
+    baselineHoldout: { state: true },
     popSize: { state: true },
     mutationRate: { state: true },
     speed: { state: true },
@@ -85,6 +89,10 @@ export class QvPlayground extends LitElement {
   declare generation: number;
   declare bestTrain: number;
   declare holdoutScore: number;
+  /** No-learning baseline scored with the same function on train / holdout (NaN if too few events). */
+  declare baselineTrain: number;
+  declare baselineHoldout: number;
+  private baselineParams: BaselineParams | null = null;
   declare popSize: number;
   declare mutationRate: number;
   declare speed: number;
@@ -130,6 +138,8 @@ export class QvPlayground extends LitElement {
     this.generation = 0;
     this.bestTrain = 0;
     this.holdoutScore = 0;
+    this.baselineTrain = Number.NaN;
+    this.baselineHoldout = Number.NaN;
     this.popSize = DEFAULT_GA_CONFIG.populationSize;
     this.mutationRate = DEFAULT_GA_CONFIG.mutationRate;
     this.speed = 4;
@@ -353,6 +363,19 @@ export class QvPlayground extends LitElement {
     .mag-counts strong {
       color: var(--qv-text, #e8eef7);
     }
+    .baseline {
+      margin-top: 12px;
+    }
+    .baseline td:not(:first-child),
+    .baseline th:not(:first-child) {
+      text-align: right;
+    }
+    .good {
+      color: var(--qv-success, #3dd68c);
+    }
+    .bad {
+      color: var(--qv-danger, #ff6b8a);
+    }
     .legend {
       display: flex;
       flex-wrap: wrap;
@@ -402,7 +425,8 @@ export class QvPlayground extends LitElement {
     return {
       ...DEFAULT_GA_CONFIG,
       populationSize: this.popSize,
-      mutationRate: this.mutationRate
+      mutationRate: this.mutationRate,
+      minMag: this.minMag
     };
   }
 
@@ -425,7 +449,30 @@ export class QvPlayground extends LitElement {
       this.holdoutCount = 0;
     }
     this.eventCount = n;
+    this.refreshBaseline();
     this.resetGa();
+  }
+
+  /** Fit the no-learning baseline on the training prefix and score it on train + holdout. */
+  private refreshBaseline(): void {
+    const n = this.allEvents.length;
+    if (n < minHistoryIndex() + 4) {
+      this.baselineParams = null;
+      this.baselineTrain = Number.NaN;
+      this.baselineHoldout = Number.NaN;
+      return;
+    }
+    const params = fitBaseline(this.allEvents, this.trainEnd);
+    this.baselineParams = params;
+    this.baselineTrain = evaluateBaseline(params, this.allEvents, undefined, this.trainEnd, undefined, this.minMag);
+    this.baselineHoldout = evaluateBaseline(
+      params,
+      this.allEvents,
+      Math.max(minHistoryIndex(), this.trainEnd),
+      n - 1,
+      undefined,
+      this.minMag
+    );
   }
 
   /** Slider input: update the readout now, rebuild (debounced) once the user stops dragging. */
@@ -561,7 +608,9 @@ export class QvPlayground extends LitElement {
       this.ga.best.genome,
       this.allEvents,
       Math.max(minHistoryIndex(), this.trainEnd),
-      this.allEvents.length - 1
+      this.allEvents.length - 1,
+      undefined,
+      this.minMag
     );
     // Walk-forward predictions for every event ≥ minMag in the catalog's last 90 days (holdout
     // period). Each step predicts event i+1 from history 0..i, so a lower threshold (denser
@@ -628,9 +677,8 @@ export class QvPlayground extends LitElement {
   };
 
   private genomeSummary(g: Genome): string {
-    const tol = decodeTolerances(g);
     const lines: string[] = [
-      `tol: time=${tol.timeTol.toFixed(2)}  distKm=${tol.distTolKm.toFixed(0)}  mag=${tol.magTol.toFixed(2)}`,
+      `scoring tolerances (fixed, not evolved): time ${SCORE_TOLERANCES.timeLogHours} log-h · ${SCORE_TOLERANCES.distKm} km · M${SCORE_TOLERANCES.mag}`,
       "top |weights| per head (feature → weight):"
     ];
     const headNames = ["logHours", "dLat", "dLon", "mag"];
@@ -648,6 +696,51 @@ export class QvPlayground extends LitElement {
       lines.push(`  ${headNames[h]}: bias=${bias.toFixed(2)} · ${top}`);
     }
     return lines.join("\n");
+  }
+
+  private renderBaseline() {
+    const bt = this.baselineTrain;
+    const bh = this.baselineHoldout;
+    const p = this.baselineParams;
+    if (!p || !Number.isFinite(bt) || !Number.isFinite(bh)) {
+      return html`<p class="muted" data-testid="baseline">Baseline needs more events — lower the threshold.</p>`;
+    }
+    const skillTrain = skillVsBaseline(this.bestTrain, bt);
+    const skillHold = skillVsBaseline(this.holdoutScore, bh);
+    const pct = (x: number) => `${x >= 0 ? "+" : "−"}${Math.abs(x * 100).toFixed(1)}%`;
+    const verdict =
+      skillHold > 0.005
+        ? html`<strong class="good">Evolution beats the dumb guess</strong> on unseen (holdout) data: it closes
+            ${pct(skillHold)} of the gap between the baseline and a perfect score.`
+        : skillHold < -0.005
+          ? html`<strong class="bad">Evolution does worse than the dumb guess</strong> on unseen (holdout) data
+              (${pct(skillHold)} of the gap to a perfect score).`
+          : html`<strong>Evolution is level with the dumb guess</strong> on unseen (holdout) data.`;
+    const hours = Math.expm1(p.logHours);
+    return html`
+      <div class="baseline" data-testid="baseline">
+        <table class="forecast">
+          <thead>
+            <tr><th></th><th>Best genome</th><th>No-learning baseline</th><th>Skill vs baseline</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Train</td><td>${this.bestTrain.toFixed(3)}</td><td>${bt.toFixed(3)}</td><td>${pct(skillTrain)}</td></tr>
+            <tr><td>Holdout</td><td>${this.holdoutScore.toFixed(3)}</td><td>${bh.toFixed(3)}</td><td><strong>${pct(skillHold)}</strong></td></tr>
+          </tbody>
+        </table>
+        <p style="margin:8px 0 0;font-size:0.85rem">${verdict}</p>
+        <p class="muted" style="margin:6px 0 0;font-size:0.78rem">
+          Baseline = no learning: next quake at the same place as the current one, after the median training gap
+          (${hours < 48 ? `${hours.toFixed(1)} h` : `${(hours / 24).toFixed(1)} days`}), with the median training magnitude
+          (M${p.mag.toFixed(2)}). Skill = (model − baseline) ÷ (1 − baseline): 0 = no better than the guess, 100% = perfect.
+          Both are scored the same way: ${SCORE_WEIGHTS.time} × time + ${SCORE_WEIGHTS.region} × location +
+          ${SCORE_WEIGHTS.mag} × magnitude, each exp(−error ÷ fixed tolerance) with tolerances
+          ${SCORE_TOLERANCES.timeLogHours} log-hour, ${SCORE_TOLERANCES.distKm} km and ${SCORE_TOLERANCES.mag} M; the
+          magnitude part weights each event by min(${MAG_WEIGHT.cap}, 10^(${MAG_WEIGHT.b} × (M − M${this.minMag.toFixed(1)}))) so
+          missing a big quake costs more. Selection still uses only the model's own train score.
+        </p>
+      </div>
+    `;
   }
 
   private renderCandidates() {
@@ -726,8 +819,9 @@ export class QvPlayground extends LitElement {
               catalog and looks ahead up to ${DEFAULT_LOOKAHEAD_STEPS} predicted events for the first one above
               M${this.minMag.toFixed(1)}; the predicted waiting time is counted from the start of tomorrow.
               Deterministic: a row changes only when that candidate's genome changes.
-              Score = P(M≥${this.minMag.toFixed(1)}) under the genome's own magnitude tolerance gene; window and
-              circle radius come from its time and distance tolerance genes. None of these are calibrated.
+              Score = P(M≥${this.minMag.toFixed(1)}) if magnitude errors followed the scorer's kernel (fixed
+              ±${SCORE_TOLERANCES.mag} M); the date window (±${SCORE_TOLERANCES.timeLogHours} log-hour) and circle radius
+              (${SCORE_TOLERANCES.distKm} km) are the fixed scoring tolerances, the same for every genome. None of these are calibrated.
             </p>
           `}
     `;
@@ -879,10 +973,16 @@ export class QvPlayground extends LitElement {
         <div class="stack">
           <section class="panel">
             <h2>Fitness over generations</h2>
-            <qv-fitness-chart .history=${this.history} .holdout=${this.holdoutScore}></qv-fitness-chart>
+            <qv-fitness-chart
+              .history=${this.history}
+              .holdout=${this.holdoutScore}
+              .baseline=${Number.isFinite(this.baselineHoldout) ? this.baselineHoldout : 0}
+            ></qv-fitness-chart>
             <p class="muted" style="margin:8px 0 0;font-size:0.8rem">
-              Blue = best train fitness. Yellow dashed = latest holdout soft-score.
+              Blue = best train fitness. Yellow dashed = latest holdout score. Grey dotted = no-learning baseline
+              on the holdout.
             </p>
+            ${this.renderBaseline()}
           </section>
 
           <section class="panel">
@@ -904,7 +1004,7 @@ export class QvPlayground extends LitElement {
               Yellow squares = ${fmt(this.replaySteps.length)} walk-forward predictions by the best genome, one per
               M≥${this.minMag.toFixed(1)} event in the catalog's last ${RECENT_PREDICTION_DAYS} days (each made from the history
               before it). Yellow ring = current replay prediction; green = the actual event it was predicting.
-              Circles = experimental candidate predictions (radius = that genome's location tolerance, in km).
+              Circles = experimental candidate predictions (radius = the fixed ${SCORE_TOLERANCES.distKm} km location tolerance).
             </p>
             <div class="legend">
               ${this.candidates.map(

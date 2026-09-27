@@ -10,10 +10,11 @@ No TensorFlow.js, no API keys, no backend. Pure TypeScript + Lit + Vite. The cat
 
 ## What you can learn by playing
 
-- How a **genome** (typed weights + tolerances) can be crossed over and mutated
+- How a **genome** (typed regression weights) can be crossed over and mutated
 - **Walk-forward fitness**: only past events are visible when scoring a prediction of the next one
 - Soft scoring that rewards being *close* (time, distance, magnitude), not only exact bins
 - Train vs **holdout** generalization on a later time slice
+- Whether evolution beats a **no-learning baseline** (a dumb guess) at all
 - Why “looks good on history” is still not real-world prediction
 
 ## How to use
@@ -33,9 +34,9 @@ No TensorFlow.js, no API keys, no backend. Pure TypeScript + Lit + Vite. The cat
 ## Headline banner: next biggest predicted quake (experimental)
 
 A sticky banner at the top of the page always shows the **biggest** event in the **current best genome's**
-next **30** predicted events after today: date/time (UTC) with an “in ~N days” hint and the genome's time
+next **30** predicted events after today: date/time (UTC) with an “in ~N days” hint and a ±1 log-hour
 window, magnitude, where it sits in the chain (“#7 of 30 in the chain”, plus the chain's magnitude range),
-and location (nearest catalog region name + lat/lon ± the genome's distance tolerance), with the genome id,
+and location (nearest catalog region name + lat/lon ± the fixed 300 km scoring tolerance), with the genome id,
 its fitness and the generation it became best. It is labelled “Experimental. Not a real earthquake forecast.”
 
 - **No magnitude threshold.** `forecastBiggestQuake` (`src/model/forecast.ts`) chains predictions exactly like
@@ -88,9 +89,32 @@ npm run data:update  # refresh public/data/earthquakes.json from USGS (2018-01-0
 
 **Features** from recent history (11-D): magnitude, log hours since previous, mean mag of last 5/20, global counts in 7d/30d, counts in the same 30° cell, log hours since last event in that cell, normalized lat/lon, mag anomaly vs last-20 mean.
 
-**Genome:** four linear heads (weights + bias) plus three tolerance genes used by soft scoring. Operators: tournament selection, uniform / single-point crossover, Gaussian-ish mutation, elitism.
+**Genome:** four linear heads (11 weights + bias each, 48 genes). No tolerance genes — see Fitness. Operators: tournament selection, uniform / single-point crossover, Gaussian-ish mutation, elitism.
 
-**Fitness:** weighted soft scores — time 35%, region (haversine) 40%, magnitude 25% — averaged over the train window. Holdout uses the later 30% of the (filtered) timeline.
+**Fitness** (all constants in `src/model/scoring-config.ts`): each walk-forward step is scored per component as
+`exp(−|error| / tolerance)` and combined as
+
+    fitness = 0.35 · mean(time) + 0.40 · mean(location) + 0.25 · Σ w·mag / Σ w
+
+over the train window (the first 70% of the filtered timeline, from event 20). Holdout = the later 30%, shown
+but never used for selection.
+
+- **Fixed tolerances** — time **1.0** log1p-hour (a factor of e in waiting time), location **300 km** (a large
+  aftershock zone / M7–8 rupture length), magnitude **0.5** (a clearly different size class, ≈5.6× energy).
+  They used to be evolved genes, and the GA simply widened them to inflate its own score (the magnitude
+  tolerance ran to its 2.5 maximum), so they are now fixed a-priori scales, the same for every genome and the baseline.
+- **Big-quake weighting** of the magnitude part: `w = min(10, 10^(0.5 · (M − Mmin)))`, where M is the *actual*
+  next magnitude and Mmin the slider minimum. Magnitudes follow Gutenberg–Richter (≈10× fewer events per +1 M),
+  so an unweighted mean rewards always predicting ≈Mmin; b = 0.5 sits halfway between "every event counts the
+  same" (b = 0) and "every magnitude band counts the same" (b = 1), and the cap (reached at Mmin + 2) stops a
+  few M8–9 events dominating.
+
+**No-learning baseline** (`src/model/baseline.ts`): next quake at the **same place** as the current one, after the
+**median training gap** (median of log1p hours between consecutive training events), with the **median training
+magnitude** (all training events are already ≥ the slider minimum). It has no learned parameters beyond those two
+training medians and is scored with exactly the same function on train and holdout. The panel under the fitness
+chart shows model vs baseline and **skill vs baseline** = (model − baseline) / (1 − baseline): the share of the gap
+between the dumb guess and a perfect score that evolution closes (0 = no better, negative = worse).
 
 **Speed:** features and targets do not depend on the genome, so they are computed once per event set and
 reused by every genome and generation. Each fitness call scores at most **3,000** walk-forward positions
@@ -153,13 +177,13 @@ reference date (“tomorrow”) is fixed when the page loads or you press Reset.
 | Column | Meaning |
 |--------|---------|
 | Candidate | Rank 1–3 (colour), short genome id, train fitness, generation it entered the top 3 |
-| Date (UTC) | Predicted time, plus a window from the genome’s time-tolerance gene |
-| Location | Region name from the nearest real catalog event’s USGS `place` (offline), lat/lon, and the genome’s location tolerance |
+| Date (UTC) | Predicted time, plus a ±1 log-hour window (the fixed time tolerance) |
+| Location | Region name from the nearest real catalog event’s USGS `place` (offline), lat/lon, and the fixed 300 km location tolerance |
 | Mag | Predicted magnitude |
-| Score | P(M ≥ threshold) if magnitude errors followed the Laplace kernel the genome is scored with (scale = magnitude-tolerance gene). **Not calibrated.** |
+| Score | P(M ≥ threshold) if magnitude errors followed the Laplace kernel the genome is scored with (scale = the fixed 0.5 M tolerance). **Not calibrated.** |
 
 On the map each prediction is a **geodesic circle** (real km, not pixels) centred on the predicted location,
-with radius = that genome’s location tolerance, coloured 1/2/3 as in the legend.
+with radius = the fixed 300 km location tolerance, coloured 1/2/3 as in the legend.
 
 Caveat: the evolved magnitude head is weak (it often regresses to the catalog mean or the M4.5 output
 floor), so “no prediction” rows are common and expected at any threshold. (Before the slider this panel

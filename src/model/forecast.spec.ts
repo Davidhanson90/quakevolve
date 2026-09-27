@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MS_PER_DAY, MS_PER_HOUR, type QuakeEvent } from "../data/types.js";
 import { FEATURE_DIM } from "../features/extract.js";
 import { GENOME_LENGTH, HEAD_COUNT, WEIGHTS_PER_HEAD, type Genome } from "./genome.js";
+import { SCORE_TOLERANCES } from "./scoring-config.js";
 import {
   BIG_QUAKE_MAG,
   DEFAULT_LOOKAHEAD_STEPS,
@@ -35,10 +36,6 @@ function biasGenome(b: { logHours: number; dLat: number; dLon: number; mag: numb
   const biases = [b.logHours, b.dLat, b.dLon, b.mag];
   for (let h = 0; h < HEAD_COUNT; h++) genes[h * WEIGHTS_PER_HEAD + FEATURE_DIM] = biases[h];
   genes[3 * WEIGHTS_PER_HEAD + 0] = b.magFromMag ?? 0;
-  const base = HEAD_COUNT * WEIGHTS_PER_HEAD;
-  genes[base] = 0.5; // timeTol (log-hours)
-  genes[base + 1] = 5; // → 500 km
-  genes[base + 2] = 0.5; // magTol
   return { genes };
 }
 
@@ -85,7 +82,7 @@ describe("forecastNextBigQuake", () => {
     expect(p.lat).toBeCloseTo(last.lat);
     expect(p.lon).toBeCloseTo(last.lon + 0.5);
     expect(p.mag).toBeGreaterThan(BIG_QUAKE_MAG);
-    expect(p.radiusKm).toBeCloseTo(500);
+    expect(p.radiusKm).toBe(SCORE_TOLERANCES.distKm);
     expect(p.score).toBeGreaterThan(0.5);
     expect(p.region).toMatch(/Testville, Tonga/);
   });

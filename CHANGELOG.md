@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fitness fixes.** (1) The three evolved tolerance genes are gone: tolerances are fixed at 1.0 log-hour,
+  300 km and 0.5 magnitude (`src/model/scoring-config.ts`), because the GA was widening them to inflate its own
+  score. Genomes are now 48 genes; `genomeFromGenes` accepts the old 51-gene shape and drops the extras.
+  (2) The magnitude part of fitness is a weighted mean with `w = min(10, 10^(0.5·(M − Mmin)))` on the actual
+  next magnitude, so missing big quakes costs more. (3) New **no-learning baseline** (same place, median training
+  gap, median training magnitude) scored the same way on train and holdout, shown next to the best genome with a
+  **skill vs baseline** figure and a dotted line on the fitness chart. Selection still uses only the model's own
+  train fitness. Candidate/banner windows and circle radii now use the fixed tolerances.
+
 - Banner now shows the **next biggest predicted quake**: the largest-magnitude event in the best genome's next
   30 predicted events (earliest on ties), with its position in the chain ("#k of 30"). The fixed M6.0 threshold
   and the "No M6.0+ predicted" fallback are gone; text fallbacks remain only for an empty catalog or a chain that
@@ -29,7 +38,7 @@
 
 - **Experimental** top-3 candidates panel: the three fittest distinct genomes each show one prediction
   for the next M>6.0 event **after today** (date + window, region + lat/lon, magnitude, uncalibrated score),
-  drawn as colour-coded geodesic circles (radius = genome location tolerance) with a legend.
+  drawn as colour-coded geodesic circles (radius = genome location tolerance; now the fixed 300 km) with a legend.
   Deterministic and cached per genome, so a row only changes when that genome changes. Replaces the
   unreleased chained "next 5" list from the best genome (PR #1). Labelled "Experimental. Not a real earthquake forecast."
 - Catalog refreshed to 2026-09-26 (4,065 USGS M≥5.5 events) and `npm run data:update`

@@ -16,6 +16,8 @@ export interface GaConfig {
   eliteCount: number;
   tournamentSize: number;
   crossoverRate: number;
+  /** Slider minimum magnitude, for the big-quake magnitude weights (default: catalog minimum). */
+  minMag?: number;
 }
 
 export const DEFAULT_GA_CONFIG: GaConfig = {
@@ -57,7 +59,7 @@ export function initPopulation(
   const population: Individual[] = [];
   for (let i = 0; i < config.populationSize; i++) {
     const genome = clampGenome(createRandomGenome(rng));
-    const fitness = evaluateFitness(genome, events, undefined, trainEnd);
+    const fitness = evaluateFitness(genome, events, undefined, trainEnd, undefined, config.minMag);
     population.push({ genome, fitness });
   }
   population.sort((a, b) => b.fitness - a.fitness);
@@ -148,9 +150,9 @@ export function evolveOneGeneration(
     }
     c1 = mutate(c1, config.mutationRate, config.mutationSigma, rng);
     c2 = mutate(c2, config.mutationRate, config.mutationSigma, rng);
-    next.push({ genome: c1, fitness: evaluateFitness(c1, events, undefined, trainEnd) });
+    next.push({ genome: c1, fitness: evaluateFitness(c1, events, undefined, trainEnd, undefined, config.minMag) });
     if (next.length < config.populationSize) {
-      next.push({ genome: c2, fitness: evaluateFitness(c2, events, undefined, trainEnd) });
+      next.push({ genome: c2, fitness: evaluateFitness(c2, events, undefined, trainEnd, undefined, config.minMag) });
     }
   }
 

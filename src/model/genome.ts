@@ -1,11 +1,14 @@
 import { FEATURE_DIM } from "../features/extract.js";
 
-/** Four linear heads: logHours, dLat, dLon, mag — each FEATURE_DIM weights + bias. */
+/**
+ * Four linear heads: logHours, dLat, dLon, mag — each FEATURE_DIM weights + bias. That is the
+ * whole genome: scoring tolerances are fixed constants (src/model/scoring-config.ts), not genes.
+ */
 export const HEAD_COUNT = 4;
 export const WEIGHTS_PER_HEAD = FEATURE_DIM + 1;
-/** Extra genes: timeTol, distTolKm, magTol */
-export const TOL_COUNT = 3;
-export const GENOME_LENGTH = HEAD_COUNT * WEIGHTS_PER_HEAD + TOL_COUNT;
+export const GENOME_LENGTH = HEAD_COUNT * WEIGHTS_PER_HEAD;
+/** Older genomes carried 3 trailing tolerance genes (timeTol, distTol, magTol). */
+export const LEGACY_GENOME_LENGTH = GENOME_LENGTH + 3;
 
 export interface Genome {
   /** Flat gene vector. */
@@ -25,8 +28,6 @@ export const PRED_MAG_MAX = 9.5;
 
 const WEIGHT_MIN = -3;
 const WEIGHT_MAX = 3;
-const TOL_MIN = 0.15;
-const TOL_MAX = 8;
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
@@ -34,13 +35,9 @@ function clamp(v: number, lo: number, hi: number): number {
 
 export function createRandomGenome(rng: () => number = Math.random): Genome {
   const genes = new Float64Array(GENOME_LENGTH);
-  for (let i = 0; i < HEAD_COUNT * WEIGHTS_PER_HEAD; i++) {
+  for (let i = 0; i < GENOME_LENGTH; i++) {
     genes[i] = (rng() * 2 - 1) * 0.5;
   }
-  // Tolerances: reasonable defaults (dist gene is hundreds-of-km units)
-  genes[HEAD_COUNT * WEIGHTS_PER_HEAD + 0] = 0.8; // log-hours tol
-  genes[HEAD_COUNT * WEIGHTS_PER_HEAD + 1] = 8; // → 800 km
-  genes[HEAD_COUNT * WEIGHTS_PER_HEAD + 2] = 0.6; // mag tol
   return { genes };
 }
 
@@ -48,13 +45,22 @@ export function cloneGenome(g: Genome): Genome {
   return { genes: new Float64Array(g.genes) };
 }
 
-export function decodeTolerances(g: Genome): { timeTol: number; distTolKm: number; magTol: number } {
-  const base = HEAD_COUNT * WEIGHTS_PER_HEAD;
-  return {
-    timeTol: clamp(g.genes[base], TOL_MIN, TOL_MAX),
-    distTolKm: clamp(g.genes[base + 1], 1, 20) * 100, // 100–2000 km
-    magTol: clamp(g.genes[base + 2], TOL_MIN, 2.5)
-  };
+/**
+ * Build a genome from raw genes, e.g. loaded from a file or an older build. Accepts the current
+ * length, or the legacy length with 3 trailing tolerance genes (those are dropped — tolerances are
+ * fixed now). Anything else, or non-finite values, is rejected. Weights are clamped.
+ */
+export function genomeFromGenes(genes: ArrayLike<number>): Genome {
+  if (genes.length !== GENOME_LENGTH && genes.length !== LEGACY_GENOME_LENGTH) {
+    throw new Error(`Genome must have ${GENOME_LENGTH} genes (or legacy ${LEGACY_GENOME_LENGTH}), got ${genes.length}`);
+  }
+  const out = new Float64Array(GENOME_LENGTH);
+  for (let i = 0; i < GENOME_LENGTH; i++) {
+    const v = Number(genes[i]);
+    if (!Number.isFinite(v)) throw new Error(`Genome gene ${i} is not a finite number`);
+    out[i] = v;
+  }
+  return clampGenome({ genes: out });
 }
 
 function headDot(genes: Float64Array, head: number, features: Float64Array): number {
@@ -94,16 +100,7 @@ export function softScore(err: number, tol: number): number {
 }
 
 export function clampGeneAt(genes: Float64Array, index: number): void {
-  const base = HEAD_COUNT * WEIGHTS_PER_HEAD;
-  if (index < base) {
-    genes[index] = clamp(genes[index], WEIGHT_MIN, WEIGHT_MAX);
-  } else if (index === base) {
-    genes[index] = clamp(genes[index], TOL_MIN, TOL_MAX);
-  } else if (index === base + 1) {
-    genes[index] = clamp(genes[index], 1, 20);
-  } else if (index === base + 2) {
-    genes[index] = clamp(genes[index], TOL_MIN, 2.5);
-  }
+  genes[index] = clamp(genes[index], WEIGHT_MIN, WEIGHT_MAX);
 }
 
 export function clampGenome(g: Genome): Genome {
@@ -124,10 +121,7 @@ export function createGoodPriorGenome(): Genome {
   // mag ≈ current mag
   g.genes[3 * WEIGHTS_PER_HEAD + 0] = 0.85;
   g.genes[3 * WEIGHTS_PER_HEAD + FEATURE_DIM] = 0.4;
-  g.genes[HEAD_COUNT * WEIGHTS_PER_HEAD + 0] = 1.0;
-  g.genes[HEAD_COUNT * WEIGHTS_PER_HEAD + 1] = 6;
-  g.genes[HEAD_COUNT * WEIGHTS_PER_HEAD + 2] = 0.5;
   return clampGenome(g);
 }
 
-export { WEIGHT_MIN, WEIGHT_MAX, TOL_MIN, TOL_MAX };
+export { WEIGHT_MIN, WEIGHT_MAX };
