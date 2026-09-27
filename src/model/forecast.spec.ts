@@ -110,6 +110,14 @@ describe("forecastNextBigQuake", () => {
     expect(p.lon).toBeCloseTo(last.lon + 2);
   });
 
+  it("uses an inclusive threshold (M ≥ minMag) that follows the slider", () => {
+    const events = catalog(30);
+    const g = biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 5 });
+    expect(forecastNextBigQuake(g, events, { minMag: 5 }).prediction?.step).toBe(1);
+    expect(forecastNextBigQuake(g, events, { minMag: 5.1 }).prediction).toBeNull();
+    expect(forecastNextBigQuake(g, events, { minMag: 4.5 }).prediction?.mag).toBe(5);
+  });
+
   it("reports honestly when no M>6 event is predicted within the look-ahead", () => {
     const res = forecastNextBigQuake(biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 5.8 }), events);
     expect(res.prediction).toBeNull();

@@ -1,5 +1,16 @@
 import { LitElement, css, html } from "lit";
 import { loadEarthquakes, trainHoldoutSplit } from "../data/load.js";
+import {
+  DEFAULT_MIN_MAG,
+  MAX_MIN_MAG,
+  MIN_MAG_STEP,
+  clampMinMag,
+  countAtOrAbove,
+  filterByMinMag,
+  minMagRange,
+  recentIndices,
+  type MinMagRange
+} from "../data/filter.js";
 import type { QuakeEvent } from "../data/types.js";
 import {
   FEATURE_DIM,
@@ -12,7 +23,6 @@ import {
 import { HEAD_COUNT, WEIGHTS_PER_HEAD, decodeTolerances, type Genome } from "../model/genome.js";
 import { evaluateFitness, replayWindow, type ReplayStep } from "../model/score.js";
 import {
-  BIG_QUAKE_MAG,
   DEFAULT_LOOKAHEAD_STEPS,
   FORECAST_DISCLAIMER,
   startOfNextUtcDay,
@@ -34,6 +44,15 @@ import {
 import "./fitness-chart.js";
 import { CANDIDATE_COLORS, type MapCandidate } from "./quake-map.js";
 
+/** Walk-forward predictions shown on the map/replay: one per event in the catalog's last N days. */
+export const RECENT_PREDICTION_DAYS = 90;
+const MIN_RECENT_PREDICTIONS = 3;
+const MAX_RECENT_PREDICTIONS = 2500;
+/** Wait this long after the last slider movement before rebuilding the event set + population. */
+const MIN_MAG_DEBOUNCE_MS = 250;
+
+const fmt = (n: number) => n.toLocaleString("en-GB");
+
 export class QvPlayground extends LitElement {
   static properties = {
     loading: { state: true },
@@ -52,7 +71,10 @@ export class QvPlayground extends LitElement {
     history: { state: true },
     replayIndex: { state: true },
     meanPop: { state: true },
-    candidates: { state: true }
+    candidates: { state: true },
+    minMag: { state: true },
+    minMagInput: { state: true },
+    magRange: { state: true }
   };
 
   declare loading: boolean;
@@ -72,7 +94,16 @@ export class QvPlayground extends LitElement {
   declare replayIndex: number;
   declare meanPop: number;
   declare candidates: CandidateForecast[];
+  /** Applied minimum magnitude: events ≥ this count, are trained on, and are predicted. */
+  declare minMag: number;
+  /** Live slider value (applied after a short debounce). */
+  declare minMagInput: number;
+  declare magRange: MinMagRange;
 
+  /** Full bundled catalog (M ≥ data floor). */
+  private catalog: QuakeEvent[] = [];
+  private minMagTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Events with mag ≥ minMag — everything below (training, holdout, replay, map) uses these. */
   private allEvents: QuakeEvent[] = [];
   /** Exclusive end index of the train prefix within allEvents. */
   private trainEnd = 0;
@@ -106,6 +137,9 @@ export class QvPlayground extends LitElement {
     this.replayIndex = 0;
     this.meanPop = 0;
     this.candidates = [];
+    this.minMag = DEFAULT_MIN_MAG;
+    this.minMagInput = DEFAULT_MIN_MAG;
+    this.magRange = { min: DEFAULT_MIN_MAG, max: MAX_MIN_MAG, step: MIN_MAG_STEP, default: DEFAULT_MIN_MAG };
   }
 
   static styles = css`
@@ -294,6 +328,27 @@ export class QvPlayground extends LitElement {
       font-weight: 700;
       margin-right: 4px;
     }
+    .mag-readout {
+      float: right;
+      color: var(--qv-text, #e8eef7);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .mag-ticks {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.7rem;
+      color: var(--qv-muted, #9aa8bc);
+    }
+    .mag-counts {
+      margin-top: 4px;
+      font-size: 0.8rem;
+      color: var(--qv-muted, #9aa8bc);
+      font-variant-numeric: tabular-nums;
+    }
+    .mag-counts strong {
+      color: var(--qv-text, #e8eef7);
+    }
     .legend {
       display: flex;
       flex-wrap: wrap;
@@ -315,22 +370,23 @@ export class QvPlayground extends LitElement {
 
   disconnectedCallback(): void {
     this.stopLoop();
+    if (this.minMagTimer !== null) clearTimeout(this.minMagTimer);
     super.disconnectedCallback();
   }
 
   private async bootstrap(): Promise<void> {
     try {
       const ds = await loadEarthquakes();
-      this.allEvents = ds.events;
+      this.catalog = ds.events;
       this.datasetMeta = { source: ds.source, query: ds.query };
-      const { train, holdout } = trainHoldoutSplit(this.allEvents, 0.7);
-      this.trainEnd = train.length;
-      this.eventCount = this.allEvents.length;
-      this.trainCount = train.length;
-      this.holdoutCount = holdout.length;
-      this.resetGa();
+      this.magRange = minMagRange(ds.minMag);
+      this.minMag = this.magRange.default;
+      this.minMagInput = this.minMag;
+      this.applyMinMag();
       this.loading = false;
-      this.statusMsg = `Loaded ${ds.count} events · train ${train.length} / holdout ${holdout.length}`;
+      this.statusMsg =
+        `Loaded ${fmt(ds.count)} events (M≥${this.magRange.min.toFixed(1)} catalog) · ` +
+        `using M≥${this.minMag.toFixed(1)}: train ${fmt(this.trainCount)} / holdout ${fmt(this.holdoutCount)}`;
     } catch (err) {
       this.loading = false;
       this.error = err instanceof Error ? err.message : String(err);
@@ -346,13 +402,73 @@ export class QvPlayground extends LitElement {
     };
   }
 
+  /**
+   * Rebuild everything that depends on the event set for the current `minMag`: filtered
+   * events, chronological 70/30 train/holdout split, population, holdout score, replay and
+   * candidate forecasts. Fitness depends on the event set, so the population starts over.
+   */
+  private applyMinMag(): void {
+    this.allEvents = filterByMinMag(this.catalog, this.minMag);
+    const n = this.allEvents.length;
+    if (n >= 4) {
+      const { train, holdout } = trainHoldoutSplit(this.allEvents, 0.7);
+      this.trainEnd = train.length;
+      this.trainCount = train.length;
+      this.holdoutCount = holdout.length;
+    } else {
+      this.trainEnd = n;
+      this.trainCount = n;
+      this.holdoutCount = 0;
+    }
+    this.eventCount = n;
+    this.resetGa();
+  }
+
+  /** Slider input: update the readout now, rebuild (debounced) once the user stops dragging. */
+  private onMinMagInput(value: number): void {
+    this.minMagInput = clampMinMag(value, this.magRange.min, this.magRange.max);
+    if (this.minMagTimer !== null) clearTimeout(this.minMagTimer);
+    this.minMagTimer = setTimeout(() => this.commitMinMag(), MIN_MAG_DEBOUNCE_MS);
+  }
+
+  private commitMinMag(): void {
+    if (this.minMagTimer !== null) clearTimeout(this.minMagTimer);
+    this.minMagTimer = null;
+    if (this.minMagInput === this.minMag || this.loading || this.error) return;
+    const wasTraining = this.training;
+    this.minMag = this.minMagInput;
+    this.applyMinMag();
+    if (!this.ga) return;
+    const summary = `M≥${this.minMag.toFixed(1)}: ${fmt(this.eventCount)} events, population reset`;
+    if (wasTraining) {
+      this.onTrain();
+      this.statusMsg = `${summary} — retraining…`;
+    } else {
+      this.statusMsg = `${summary} — press Train to evolve`;
+    }
+  }
+
   private resetGa(): void {
     this.stopLoop();
     this.training = false;
-    if (this.allEvents.length < minHistoryIndex() + 4) return;
+    if (this.allEvents.length < minHistoryIndex() + 4) {
+      this.ga = null;
+      this.forecaster = null;
+      this.candidates = [];
+      this.candidateSince.clear();
+      this.replaySteps = [];
+      this.replayIndex = 0;
+      this.history = [];
+      this.generation = 0;
+      this.bestTrain = 0;
+      this.holdoutScore = 0;
+      this.meanPop = 0;
+      this.statusMsg = `Only ${this.allEvents.length} events at M≥${this.minMag.toFixed(1)} — too few to train. Lower the threshold.`;
+      return;
+    }
     this.referenceTime = startOfNextUtcDay(Date.now());
     this.forecaster = new CandidateForecaster(this.allEvents, {
-      minMag: BIG_QUAKE_MAG,
+      minMag: this.minMag,
       maxSteps: DEFAULT_LOOKAHEAD_STEPS,
       referenceTime: this.referenceTime
     });
@@ -375,7 +491,7 @@ export class QvPlayground extends LitElement {
   }
 
   /**
-   * Experimental: top-3 distinct genomes and their next M>6 prediction after today.
+   * Experimental: top-3 distinct genomes and their next M≥minMag prediction after today.
    * Cheap and cached per genome, so it runs every generation; a row only changes when
    * that candidate's genome changes.
    */
@@ -401,10 +517,18 @@ export class QvPlayground extends LitElement {
       Math.max(minHistoryIndex(), this.trainEnd),
       this.allEvents.length - 1
     );
-    // Replay a window near the train/holdout boundary for prediction vs actual
-    const from = Math.max(minHistoryIndex(), this.trainEnd - 1);
-    const to = Math.min(this.allEvents.length - 1, this.trainEnd + 40);
-    this.replaySteps = replayWindow(this.ga.best.genome, this.allEvents, from, to);
+    // Walk-forward predictions for every event ≥ minMag in the catalog's last 90 days (holdout
+    // period). Each step predicts event i+1 from history 0..i, so a lower threshold (denser
+    // catalog) means more predictions on the map and in the replay.
+    const idx = recentIndices(
+      this.allEvents,
+      RECENT_PREDICTION_DAYS,
+      MIN_RECENT_PREDICTIONS,
+      Math.max(minHistoryIndex() + 1, this.trainEnd)
+    ).slice(-MAX_RECENT_PREDICTIONS);
+    this.replaySteps = idx.length
+      ? replayWindow(this.ga.best.genome, this.allEvents, idx[0] - 1, this.allEvents.length - 1)
+      : [];
     this.replayIndex = 0;
   }
 
@@ -487,14 +611,14 @@ export class QvPlayground extends LitElement {
         return "Look-ahead left the data range (latitude at a pole or magnitude at the M9.5 cap).";
       }
       const next = fc.nextMag === null ? "" : ` Its next predicted event is M${fc.nextMag.toFixed(2)}.`;
-      return `No M>${BIG_QUAKE_MAG.toFixed(1)} event in its next ${fc.stepsRun} predicted events.${next}`;
+      return `No M≥${this.minMag.toFixed(1)} event in its next ${fc.stepsRun} predicted events.${next}`;
     };
     const lastEvent = this.allEvents.at(-1);
     return html`
       <div class="experimental">
         <strong>${FORECAST_DISCLAIMER}</strong>
         The three fittest distinct genomes in the current population each give one prediction for the
-        next M&gt;${BIG_QUAKE_MAG.toFixed(1)} event after today. A toy linear GA cannot predict real earthquakes.
+        next M≥${this.minMag.toFixed(1)} event after today (threshold = the minimum-magnitude slider). A toy linear GA cannot predict real earthquakes.
       </div>
       ${!this.candidates.length
         ? html`<p class="muted">Candidates appear after the population initializes.</p>`
@@ -553,13 +677,23 @@ export class QvPlayground extends LitElement {
               Predictions are dated after ${day(this.referenceTime - 1)} (UTC); catalog runs to
               ${lastEvent ? hour(lastEvent.time) : "—"} UTC. Each genome predicts the next event from the real
               catalog and looks ahead up to ${DEFAULT_LOOKAHEAD_STEPS} predicted events for the first one above
-              M${BIG_QUAKE_MAG.toFixed(1)}; the predicted waiting time is counted from the start of tomorrow.
+              M${this.minMag.toFixed(1)}; the predicted waiting time is counted from the start of tomorrow.
               Deterministic: a row changes only when that candidate's genome changes.
-              Score = P(M&gt;${BIG_QUAKE_MAG.toFixed(1)}) under the genome's own magnitude tolerance gene; window and
+              Score = P(M≥${this.minMag.toFixed(1)}) under the genome's own magnitude tolerance gene; window and
               circle radius come from its time and distance tolerance genes. None of these are calibrated.
             </p>
           `}
     `;
+  }
+
+  private replayPredictionsCache: { steps: ReplayStep[]; preds: ReplayStep["prediction"][] } | null = null;
+
+  /** Stable array (per replay rebuild) so the map only redraws markers when they change. */
+  private replayPredictions(): ReplayStep["prediction"][] {
+    if (this.replayPredictionsCache?.steps !== this.replaySteps) {
+      this.replayPredictionsCache = { steps: this.replaySteps, preds: this.replaySteps.map((st) => st.prediction) };
+    }
+    return this.replayPredictionsCache.preds;
   }
 
   private mapCandidates(): MapCandidate[] {
@@ -567,6 +701,42 @@ export class QvPlayground extends LitElement {
       const p = c.forecast.prediction;
       return p ? [{ rank: c.rank, lat: p.lat, lon: p.lon, radiusKm: p.radiusKm }] : [];
     });
+  }
+
+  /** Walk-forward (replay) predictions + candidate circles currently drawn. */
+  private predictionsShown(): number {
+    return this.replaySteps.length + this.mapCandidates().length;
+  }
+
+  private renderMinMag() {
+    const r = this.magRange;
+    const pending = this.minMagInput !== this.minMag;
+    const previewEvents = countAtOrAbove(this.catalog, this.minMagInput);
+    return html`
+      <label for="min-mag">
+        Minimum magnitude
+        <span class="mag-readout">M ≥ ${this.minMagInput.toFixed(1)}</span>
+      </label>
+      <input
+        id="min-mag"
+        type="range"
+        min=${String(r.min)}
+        max=${String(r.max)}
+        step=${String(r.step)}
+        .value=${String(this.minMagInput)}
+        ?disabled=${this.loading || !!this.error}
+        aria-valuetext=${`M ≥ ${this.minMagInput.toFixed(1)}`}
+        @input=${(e: Event) => this.onMinMagInput(Number((e.target as HTMLInputElement).value))}
+        @change=${() => this.commitMinMag()}
+      />
+      <div class="mag-ticks"><span>M${r.min.toFixed(1)}</span><span>M${r.max.toFixed(1)}</span></div>
+      <div class="mag-counts" data-testid="mag-counts">
+        <strong>${fmt(previewEvents)}</strong> events ≥ M${this.minMagInput.toFixed(1)} ·
+        ${pending
+          ? html`<em>applying…</em>`
+          : html`<strong>${fmt(this.predictionsShown())}</strong> predictions shown`}
+      </div>
+    `;
   }
 
   private currentReplay(): ReplayStep | null {
@@ -594,6 +764,7 @@ export class QvPlayground extends LitElement {
       <div class="layout">
         <aside class="panel">
           <h2>Controls</h2>
+          ${this.renderMinMag()}
           <label>Population ${this.popSize}</label>
           <input
             type="range"
@@ -642,8 +813,10 @@ export class QvPlayground extends LitElement {
             <div class="stat"><div class="k">Best train</div><div class="v">${this.bestTrain.toFixed(3)}</div></div>
             <div class="stat"><div class="k">Holdout</div><div class="v">${this.holdoutScore.toFixed(3)}</div></div>
             <div class="stat"><div class="k">Pop mean</div><div class="v">${this.meanPop.toFixed(3)}</div></div>
-            <div class="stat"><div class="k">Events</div><div class="v">${this.eventCount}</div></div>
-            <div class="stat"><div class="k">Train / hold</div><div class="v">${this.trainCount} / ${this.holdoutCount}</div></div>
+            <div class="stat"><div class="k">Events ≥ M${this.minMag.toFixed(1)}</div><div class="v">${fmt(this.eventCount)}</div></div>
+            <div class="stat"><div class="k">Train / hold</div><div class="v">${fmt(this.trainCount)} / ${fmt(this.holdoutCount)}</div></div>
+            <div class="stat"><div class="k">Predictions shown</div><div class="v">${fmt(this.predictionsShown())}</div></div>
+            <div class="stat"><div class="k">Replay steps</div><div class="v">${fmt(this.replaySteps.length)}</div></div>
           </div>
 
           <p class="edu">
@@ -666,7 +839,7 @@ export class QvPlayground extends LitElement {
           </section>
 
           <section class="panel">
-            <h2>Top ${CANDIDATE_COUNT} candidates: next M&gt;${BIG_QUAKE_MAG.toFixed(1)} event after today (experimental)</h2>
+            <h2>Top ${CANDIDATE_COUNT} candidates: next M≥${this.minMag.toFixed(1)} event after today (experimental)</h2>
             ${this.renderCandidates()}
           </section>
 
@@ -676,17 +849,21 @@ export class QvPlayground extends LitElement {
               .events=${this.allEvents}
               .highlight=${highlight}
               .prediction=${prediction}
+              .predictions=${this.replayPredictions()}
               .candidates=${this.mapCandidates()}
             ></qv-quake-map>
             <p class="muted" style="margin:8px 0 0;font-size:0.8rem">
-              Blue dots = historical M≥5.5 events. Yellow ring = model prediction; green = actual next event (replay).
+              Blue dots = ${fmt(this.eventCount)} historical M≥${this.minMag.toFixed(1)} events.
+              Yellow squares = ${fmt(this.replaySteps.length)} walk-forward predictions by the best genome, one per
+              M≥${this.minMag.toFixed(1)} event in the catalog's last ${RECENT_PREDICTION_DAYS} days (each made from the history
+              before it). Yellow ring = current replay prediction; green = the actual event it was predicting.
               Circles = experimental candidate predictions (radius = that genome's location tolerance, in km).
             </p>
             <div class="legend">
               ${this.candidates.map(
                 (c) => html`<span
                   ><span class="swatch" style="border-color:${CANDIDATE_COLORS[c.rank - 1]}">${c.rank}</span>
-                  Candidate ${c.rank}${c.forecast.prediction ? "" : " (no M>6 prediction)"}</span
+                  Candidate ${c.rank}${c.forecast.prediction ? "" : ` (no M≥${this.minMag.toFixed(1)} prediction)`}</span
                 >`
               )}
               <span class="muted">${FORECAST_DISCLAIMER}</span>
@@ -695,6 +872,13 @@ export class QvPlayground extends LitElement {
 
           <section class="panel">
             <h2>Prediction vs actual (holdout replay)</h2>
+            <p class="muted" style="margin:0 0 8px;font-size:0.8rem">
+              Step ${this.replaySteps.length ? (this.replayIndex % this.replaySteps.length) + 1 : 0} of
+              ${fmt(this.replaySteps.length)} · every M≥${this.minMag.toFixed(1)} event in the last
+              ${RECENT_PREDICTION_DAYS} days of the catalog${this.replaySteps.length <= MIN_RECENT_PREDICTIONS
+                ? ` (at least the last ${MIN_RECENT_PREDICTIONS})`
+                : ""}
+            </p>
             ${step
               ? html`
                   <div class="compare">

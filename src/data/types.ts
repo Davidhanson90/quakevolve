@@ -6,12 +6,16 @@ export interface QuakeEvent {
   lat: number;
   lon: number;
   mag: number;
+  /** Hypocentre depth in km (compact snapshot only). */
+  depth?: number;
   place?: string;
 }
 
 export interface QuakeDataset {
   source: string;
   query: string;
+  /** Catalog magnitude floor (USGS `minmagnitude`), or the smallest magnitude present. */
+  minMag: number;
   count: number;
   events: QuakeEvent[];
 }

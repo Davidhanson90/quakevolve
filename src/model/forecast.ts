@@ -8,7 +8,10 @@ import { PRED_MAG_MAX, decodeTolerances, predict, type Genome } from "./genome.j
  * This is toy model output for teaching — not a real earthquake forecast.
  */
 
-/** Magnitude threshold for a "big" event (strictly greater than). */
+/**
+ * Default magnitude threshold for a "big" event (inclusive: M ≥ threshold). The playground
+ * passes its minimum-magnitude slider value instead.
+ */
 export const BIG_QUAKE_MAG = 6.0;
 
 /** How many predicted events a genome may look ahead to find one above the threshold. */
@@ -17,7 +20,7 @@ export const DEFAULT_LOOKAHEAD_STEPS = 10;
 export const FORECAST_DISCLAIMER = "Experimental. Not a real earthquake forecast.";
 
 export interface ForecastOptions {
-  /** Keep a prediction only if magnitude is strictly above this. Default 6.0. */
+  /** Keep a prediction only if magnitude is at or above this (M ≥ minMag). Default 6.0. */
   minMag?: number;
   /** Max predicted events to look ahead (short roll-forward). Default 10. */
   maxSteps?: number;
@@ -44,7 +47,7 @@ export interface QuakeForecast {
   /** Location tolerance radius (km) from the genome's distance gene. */
   radiusKm: number;
   /**
-   * Model self-score: P(M > minMag) if magnitude errors followed the Laplace kernel the
+   * Model self-score: P(M ≥ minMag) if magnitude errors followed the Laplace kernel the
    * genome is scored with (scale = magTol gene). Not a calibrated probability.
    */
   score: number;
@@ -65,7 +68,7 @@ export interface ForecastResult {
   stoppedReason: ForecastStopReason;
 }
 
-/** P(M > threshold) under a Laplace distribution centred on `mag` with scale `scale`. */
+/** P(M ≥ threshold) under a Laplace distribution centred on `mag` with scale `scale`. */
 export function exceedanceScore(mag: number, threshold: number, scale: number): number {
   const b = Math.max(1e-6, scale);
   const d = mag - threshold;
@@ -81,7 +84,7 @@ export function startOfNextUtcDay(now: number): number {
 /**
  * Deterministic next-big-event prediction for one genome (no sampling, no randomness):
  *
- * 1. From the real catalog, predict the next event; if its magnitude is not above
+ * 1. From the real catalog, predict the next event; if its magnitude is below
  *    `minMag`, append it as if it happened and predict again — at most `maxSteps` times.
  *    The look-ahead is kept short because long chains drift (locations walk, magnitudes
  *    run away).
@@ -130,7 +133,7 @@ export function forecastNextBigQuake(
       break;
     }
     const gapMs = hoursFromLog(pred.logHours) * MS_PER_HOUR;
-    if (pred.mag > minMag) {
+    if (pred.mag >= minMag) {
       // Waiting time already accumulated by earlier (smaller) look-ahead steps.
       const offset = anchorTime + (last.time - lastEventTime);
       return {

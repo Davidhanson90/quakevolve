@@ -18,17 +18,48 @@ function parseEvent(raw: unknown): QuakeEvent | null {
     lat: o.lat,
     lon: o.lon,
     mag: o.mag,
+    ...(isFiniteNumber(o.depth) ? { depth: o.depth } : {}),
     place: typeof o.place === "string" ? o.place : undefined
   };
 }
 
-/** Validate and sort events ascending by time. */
+/** Compact snapshot format written by scripts/update-earthquakes.mjs. */
+export const COMPACT_FORMAT = "qv-compact-1";
+
+/**
+ * Decode compact rows `[dtSeconds, lat, lon, depth, mag, placeIndex]` into event objects.
+ * Times are cumulative whole-second offsets from `t0` (epoch ms).
+ */
+export function decodeCompactEvents(o: Record<string, unknown>): Record<string, unknown>[] {
+  const rows = Array.isArray(o.events) ? o.events : [];
+  const places = Array.isArray(o.places) ? o.places : [];
+  let t = isFiniteNumber(o.t0) ? o.t0 : 0;
+  const out: Record<string, unknown>[] = [];
+  rows.forEach((row, i) => {
+    if (!Array.isArray(row) || row.length < 5) return;
+    const [dt, lat, lon, depth, mag, pi] = row as unknown[];
+    if (!isFiniteNumber(dt)) return;
+    t += dt * 1000;
+    const place = isFiniteNumber(pi) && pi >= 0 ? places[pi] : undefined;
+    out.push({ id: String(i), time: t, lat, lon, depth, mag, place });
+  });
+  return out;
+}
+
+/** Validate and sort events ascending by time. Accepts the compact format or plain objects. */
 export function normalizeDataset(raw: unknown): QuakeDataset {
   if (!raw || typeof raw !== "object") {
     throw new Error("Invalid earthquake dataset: expected an object");
   }
   const o = raw as Record<string, unknown>;
-  const list = Array.isArray(o.events) ? o.events : Array.isArray(raw) ? (raw as unknown[]) : null;
+  const list =
+    o.format === COMPACT_FORMAT
+      ? decodeCompactEvents(o)
+      : Array.isArray(o.events)
+        ? o.events
+        : Array.isArray(raw)
+          ? (raw as unknown[])
+          : null;
   if (!list) throw new Error("Invalid earthquake dataset: missing events array");
 
   const events: QuakeEvent[] = [];
@@ -47,6 +78,9 @@ export function normalizeDataset(raw: unknown): QuakeDataset {
   return {
     source: typeof o.source === "string" ? o.source : "unknown",
     query: typeof o.query === "string" ? o.query : "",
+    minMag: isFiniteNumber(o.minMag)
+      ? o.minMag
+      : events.reduce((m, ev) => Math.min(m, ev.mag), events.length ? Infinity : 0),
     count: events.length,
     events
   };

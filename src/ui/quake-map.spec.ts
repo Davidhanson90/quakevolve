@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { haversineKm } from "../data/types.js";
-import { CANDIDATE_COLORS, geodesicCircle } from "./quake-map.js";
+import { CANDIDATE_COLORS, eventDotStyle, geodesicCircle } from "./quake-map.js";
 
 describe("geodesicCircle", () => {
   it("puts every ring point at the requested great-circle distance", () => {
@@ -21,5 +21,17 @@ describe("geodesicCircle", () => {
 
   it("has three distinct candidate colours", () => {
     expect(new Set(CANDIDATE_COLORS).size).toBe(3);
+  });
+});
+
+describe("eventDotStyle", () => {
+  it("draws bigger, more opaque dots for bigger events and keeps M4.5 visible", () => {
+    const small = eventDotStyle(4.5);
+    const big = eventDotStyle(7);
+    expect(small.r).toBeGreaterThan(0);
+    expect(small.alpha).toBeGreaterThan(0.1);
+    expect(big.r).toBeGreaterThan(small.r);
+    expect(big.alpha).toBeGreaterThan(small.alpha);
+    expect(eventDotStyle(9.5).alpha).toBeLessThanOrEqual(0.8);
   });
 });

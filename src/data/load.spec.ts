@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadEarthquakes, normalizeDataset, trainHoldoutSplit } from "./load.js";
+import { COMPACT_FORMAT, loadEarthquakes, normalizeDataset, trainHoldoutSplit } from "./load.js";
 
 describe("normalizeDataset", () => {
   it("sorts by time and drops invalid rows", () => {
@@ -29,6 +29,38 @@ describe("normalizeDataset", () => {
     expect(ds.source).toBe("unknown");
     expect(ds.query).toBe("");
     expect(ds.events[0].id).toBe("b");
+  });
+
+  it("decodes the compact snapshot format", () => {
+    const ds = normalizeDataset({
+      source: "USGS",
+      query: "minmagnitude=4.5",
+      minMag: 4.5,
+      format: COMPACT_FORMAT,
+      fields: ["dt", "lat", "lon", "depth", "mag", "place"],
+      t0: 1_514_905_039_000,
+      places: ["south of the Fiji Islands", "Coquimbo, Chile"],
+      events: [
+        [0, -24.82, 178.45, 540, 5.9, 0],
+        [703, -30.1, -71.5, 35, 4.6, 1],
+        [60, 10, 20, 10, 4.7, -1],
+        "junk",
+        ["x", 0, 0, 0, 5, 0]
+      ]
+    });
+    expect(ds.count).toBe(3);
+    expect(ds.minMag).toBe(4.5);
+    expect(ds.events[0]).toMatchObject({ time: 1_514_905_039_000, lat: -24.82, depth: 540, mag: 5.9, place: "south of the Fiji Islands" });
+    expect(ds.events[1].time).toBe(1_514_905_039_000 + 703_000);
+    expect(ds.events[1].place).toBe("Coquimbo, Chile");
+    expect(ds.events[2].time).toBe(1_514_905_039_000 + 763_000);
+    expect(ds.events[2].place).toBeUndefined();
+  });
+
+  it("derives minMag from the data when the file does not say", () => {
+    const ds = normalizeDataset({ events: [{ id: "a", time: 1, lat: 0, lon: 0, mag: 5.7 }, { id: "b", time: 2, lat: 0, lon: 0, mag: 5.2 }] });
+    expect(ds.minMag).toBe(5.2);
+    expect(normalizeDataset({ events: [] }).minMag).toBe(0);
   });
 
   it("rejects missing events and non-objects", () => {

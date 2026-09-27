@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Minimum-magnitude slider** (`M ≥ 4.5` … `M ≥ 7.5`, step 0.1, default `M ≥ 5.5`). One threshold drives the
+  catalog: map, train/holdout split, replay, walk-forward predictions and the experimental candidates' target
+  (`M ≥ threshold`, was a fixed M>6.0). Lowering it shows more events and more predictions (counts shown next to
+  the slider). Changing it (debounced) resets the population and retrains cleanly.
+- Catalog snapshot lowered to **M≥4.5** (66,281 USGS events, 2018-01-01 → 2026-09-27) in a compact
+  delta/dictionary-encoded format (≈2.1 MB); `npm run data:update` pages the USGS query by year.
+- Map and replay now show the best genome's walk-forward predictions for every event in the catalog's last 90 days.
+- Faster fitness: genome-independent features are cached per event set and each fitness call scores at most 3,000
+  evenly spaced positions (the default M≥5.5 windows are still scored in full). The map pre-renders the catalog
+  layer once and draws every event instead of a 2,500-dot sample.
+
 - **Experimental** top-3 candidates panel: the three fittest distinct genomes each show one prediction
   for the next M>6.0 event **after today** (date + window, region + lat/lon, magnitude, uncalibrated score),
   drawn as colour-coded geodesic circles (radius = genome location tolerance) with a legend.

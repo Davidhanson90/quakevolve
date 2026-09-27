@@ -37,25 +37,41 @@ export function geodesicCircle(lat: number, lon: number, radiusKm: number, segme
   return pts;
 }
 
+/** Dot radius / opacity for a catalog event (M4.5 dots stay small and faint). */
+export function eventDotStyle(mag: number): { r: number; alpha: number } {
+  return {
+    r: 1 + Math.max(0, mag - 4.5) * 0.9,
+    alpha: Math.min(0.8, Math.max(0.14, 0.2 + (mag - 5) * 0.15))
+  };
+}
+
 export class QvQuakeMap extends LitElement {
   static properties = {
     events: { attribute: false },
     highlight: { attribute: false },
     prediction: { attribute: false },
+    predictions: { attribute: false },
     candidates: { attribute: false }
   };
 
   declare events: QuakeEvent[];
   declare highlight: QuakeEvent | null;
   declare prediction: Prediction | null;
+  /** Walk-forward predictions shown as small yellow markers (one per recent event). */
+  declare predictions: Prediction[];
   /** Experimental candidate predictions, drawn as geodesic circles. */
   declare candidates: MapCandidate[];
+
+  /** Cached catalog layer: redrawn only when the event array or canvas size changes. */
+  private baseLayer: HTMLCanvasElement | null = null;
+  private baseKey: { events: QuakeEvent[]; w: number; h: number; dpr: number } | null = null;
 
   constructor() {
     super();
     this.events = [];
     this.highlight = null;
     this.prediction = null;
+    this.predictions = [];
     this.candidates = [];
   }
 
@@ -110,17 +126,14 @@ export class QvQuakeMap extends LitElement {
       ctx.stroke();
     }
 
-    const maxDraw = Math.min(this.events.length, 2500);
-    const step = Math.max(1, Math.floor(this.events.length / maxDraw));
-    for (let i = 0; i < this.events.length; i += step) {
-      const ev = this.events[i];
-      const { x, y } = this.project(ev.lat, ev.lon, w, h);
-      const r = 1.2 + Math.max(0, ev.mag - 5) * 1.1;
-      const alpha = 0.25 + Math.min(0.55, (ev.mag - 5) * 0.15);
-      ctx.fillStyle = `rgba(91, 157, 255, ${alpha})`;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
+    ctx.drawImage(this.catalogLayer(w, h, dpr), 0, 0, w, h);
+
+    // Walk-forward predictions for the recent window (count grows as the threshold drops).
+    const preds = this.predictions ?? [];
+    ctx.fillStyle = "rgba(240, 180, 41, 0.55)";
+    for (const p of preds) {
+      const { x, y } = this.project(p.lat, p.lon, w, h);
+      ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
     }
 
     if (this.prediction) {
@@ -174,6 +187,33 @@ export class QvQuakeMap extends LitElement {
       ctx.arc(x, y, 7, 0, Math.PI * 2);
       ctx.stroke();
     }
+  }
+
+  /** All catalog events (no subsampling) pre-rendered once per event set / canvas size. */
+  private catalogLayer(w: number, h: number, dpr: number): HTMLCanvasElement {
+    const k = this.baseKey;
+    if (this.baseLayer && k && k.events === this.events && k.w === w && k.h === h && k.dpr === dpr) {
+      return this.baseLayer;
+    }
+    const layer = this.baseLayer ?? document.createElement("canvas");
+    layer.width = Math.max(1, Math.floor(w * dpr));
+    layer.height = Math.max(1, Math.floor(h * dpr));
+    const ctx = layer.getContext("2d");
+    if (ctx) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      for (const ev of this.events) {
+        const { x, y } = this.project(ev.lat, ev.lon, w, h);
+        const { r, alpha } = eventDotStyle(ev.mag);
+        ctx.fillStyle = `rgba(91, 157, 255, ${alpha.toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    this.baseLayer = layer;
+    this.baseKey = { events: this.events, w, h, dpr };
+    return layer;
   }
 
   render() {

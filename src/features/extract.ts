@@ -110,7 +110,7 @@ export function extractTarget(events: QuakeEvent[], i: number): TargetTriple {
 
 /** Display bins for UI / soft credit. */
 export const TIME_BIN_LABELS = ["≤12h", "12–48h", "2–7d", "7–30d", "30–90d", ">90d"] as const;
-export const MAG_BIN_LABELS = ["5.0–5.5", "5.5–6.0", "6.0–6.5", "6.5–7.0", "7.0–7.5", "≥7.5"] as const;
+export const MAG_BIN_LABELS = ["<5.5", "5.5–6.0", "6.0–6.5", "6.5–7.0", "7.0–7.5", "≥7.5"] as const;
 
 export function timeBinFromHours(hours: number): number {
   if (hours <= 12) return 0;

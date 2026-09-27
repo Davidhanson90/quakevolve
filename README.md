@@ -19,12 +19,16 @@ No TensorFlow.js, no API keys, no backend. Pure TypeScript + Lit + Vite. The cat
 ## How to use
 
 1. Open the demo (or `npm start` locally)
-2. Optionally tweak population size and mutation rate
-3. Hit **Train** — watch generation count, best train fitness, and the fitness chart climb
-4. Compare **holdout** soft-score (yellow dashed line) as a reality check
-5. On the map: yellow ring = model’s next-event guess, green = actual next event during replay
-6. Watch the **Top 3 candidates (experimental)** panel and the coloured circles on the map update as the GA evolves
-7. **Pause** / **Reset** as needed
+2. Pick a **Minimum magnitude** (slider, `M ≥ 4.5` … `M ≥ 7.5`, default `M ≥ 5.5`). Only events at or
+   above it count: they are drawn on the map, trained on, held out, replayed and predicted. Lower it to
+   see more events and more predictions (see [Minimum-magnitude slider](#minimum-magnitude-slider))
+3. Optionally tweak population size and mutation rate
+4. Hit **Train** — watch generation count, best train fitness, and the fitness chart climb
+5. Compare **holdout** soft-score (yellow dashed line) as a reality check
+6. On the map: yellow squares = the best genome’s walk-forward predictions for every event in the last
+   90 days of the catalog; yellow ring = the prediction currently being replayed, green = the actual event
+7. Watch the **Top 3 candidates (experimental)** panel and the coloured circles on the map update as the GA evolves
+8. **Pause** / **Reset** as needed
 
 ## Quick start
 
@@ -42,7 +46,7 @@ npm test           # vitest
 npm run lint       # eslint
 npm run build      # typecheck + production Vite build → dist/
 npm run build:verify
-npm run data:update  # refresh public/data/earthquakes.json from USGS (2018-01-01 → now, M≥5.5)
+npm run data:update  # refresh public/data/earthquakes.json from USGS (2018-01-01 → now, M≥4.5)
 ```
 
 ## Algorithm summary
@@ -59,9 +63,46 @@ npm run data:update  # refresh public/data/earthquakes.json from USGS (2018-01-0
 
 **Genome:** four linear heads (weights + bias) plus three tolerance genes used by soft scoring. Operators: tournament selection, uniform / single-point crossover, Gaussian-ish mutation, elitism.
 
-**Fitness:** weighted soft scores — time 35%, region (haversine) 40%, magnitude 25% — averaged over the train window. Holdout uses the later 30% of the timeline.
+**Fitness:** weighted soft scores — time 35%, region (haversine) 40%, magnitude 25% — averaged over the train window. Holdout uses the later 30% of the (filtered) timeline.
 
-## Experimental: top 3 candidates, next M>6.0 event after today
+**Speed:** features and targets do not depend on the genome, so they are computed once per event set and
+reused by every genome and generation. Each fitness call scores at most **3,000** walk-forward positions
+(`MAX_FITNESS_POINTS`, `src/model/score.ts`); bigger windows use an evenly spaced, deterministic subsample.
+At the default M≥5.5 the whole train window (≈2.8k positions) and holdout (≈1.2k) are still scored
+exhaustively, so results match the original app; at M≥5.0/M≥4.5 (≈11k/46k train positions) fitness is
+estimated on the subsample.
+
+## Minimum-magnitude slider
+
+One threshold drives the whole app: **events with M ≥ the slider value** are the catalog.
+
+| Slider | Value |
+|--------|-------|
+| Range | `M ≥ 4.5` (the bundled data floor) … `M ≥ 7.5` |
+| Step | 0.1 |
+| Default | `M ≥ 5.5` (the original catalog, so default behaviour is unchanged) |
+
+Changing it (debounced 250 ms after you stop dragging) filters the catalog, rebuilds the chronological
+70/30 train/holdout split, **resets the population** (fitness depends on the event set) and rebuilds the
+replay and candidate forecasts. If training was running it restarts on the new set; otherwise press Train.
+
+Lowering it shows more of everything, because the catalog gets denser:
+
+| Threshold | Events | Train / holdout | Walk-forward predictions shown (last 90 days) |
+|-----------|-------:|----------------:|----------------------------------------------:|
+| M ≥ 7.5 | 40 | 28 / 12 | 3 (minimum) |
+| M ≥ 6.5 | 349 | 244 / 105 | 9 |
+| M ≥ 6.0 | 1,176 | 823 / 353 | 30 |
+| M ≥ 5.5 | 4,065 | 2,845 / 1,220 | 123 |
+| M ≥ 5.0 | 15,768 | 11,037 / 4,731 | 573 |
+| M ≥ 4.5 | 66,281 | 46,396 / 19,885 | 2,040 |
+
+"Predictions shown" in the UI = those walk-forward predictions (one per M≥threshold event in the last
+90 days, each made from the history before it, drawn as yellow squares and stepped through in the replay)
+plus the experimental candidate circles. The top-3 candidate panel uses the same threshold: it asks for
+each candidate's next predicted **M ≥ threshold** event after today.
+
+## Experimental: top 3 candidates, next M≥(slider) event after today
 
 > **Experimental. Not a real earthquake forecast.** A linear toy model evolved with a genetic
 > algorithm cannot predict real earthquakes. This panel shows what the fittest genomes “believe”.
@@ -69,13 +110,13 @@ npm run data:update  # refresh public/data/earthquakes.json from USGS (2018-01-0
 Every generation, the three fittest **distinct** genomes in the population (`topCandidates`,
 `src/model/candidates.ts`) each give **one** prediction (`forecastNextBigQuake`, `src/model/forecast.ts`):
 
-1. Predict the next event from the real catalog. If it is not above M6.0, append it as if it happened
+1. Predict the next event from the (filtered) catalog. If it is below the slider threshold, append it as if it happened
    and predict again, looking ahead at most **10** predicted events (long chains drift).
-2. The first predicted event above M6.0 is the candidate’s prediction. Its predicted waiting time is
+2. The first predicted event at or above the threshold is the candidate’s prediction. Its predicted waiting time is
    counted from the **start of tomorrow (UTC)** rather than from the last catalog event — the catalog runs
    up to today, so the quiet time since the last event is treated as memoryless — which means every
    prediction is dated **after today**.
-3. If nothing above M6.0 turns up (or the look-ahead degenerates to a pole / the M9.5 cap), the row says
+3. If nothing at or above the threshold turns up (or the look-ahead degenerates to a pole / the M9.5 cap), the row says
    so instead of inventing one.
 
 **Consistent:** there is no randomness at forecast time. Results are cached by a hash of the genome’s
@@ -88,32 +129,42 @@ reference date (“tomorrow”) is fixed when the page loads or you press Reset.
 | Date (UTC) | Predicted time, plus a window from the genome’s time-tolerance gene |
 | Location | Region name from the nearest real catalog event’s USGS `place` (offline), lat/lon, and the genome’s location tolerance |
 | Mag | Predicted magnitude |
-| Score | P(M > 6.0) if magnitude errors followed the Laplace kernel the genome is scored with (scale = magnitude-tolerance gene). **Not calibrated.** |
+| Score | P(M ≥ threshold) if magnitude errors followed the Laplace kernel the genome is scored with (scale = magnitude-tolerance gene). **Not calibrated.** |
 
 On the map each prediction is a **geodesic circle** (real km, not pixels) centred on the predicted location,
 with radius = that genome’s location tolerance, coloured 1/2/3 as in the legend.
 
-Caveat: the evolved magnitude head is weak (it often predicts small next events), so “no M>6.0 prediction”
-rows are common and expected.
+Caveat: the evolved magnitude head is weak (it often regresses to the catalog mean or the M4.5 output
+floor), so “no prediction” rows are common and expected at any threshold. (Before the slider this panel
+used a fixed M>6.0 threshold on the M≥5.5 catalog.)
 
 ## Dataset
 
 | Field | Value |
 |-------|-------|
 | Source | [USGS FDSN event API](https://earthquake.usgs.gov/fdsnws/event/1/) (public catalog) |
-| Filters | `minmagnitude=5.5`, `starttime=2018-01-01`, `endtime` = time of the last refresh, global |
-| Bundled file | `public/data/earthquakes.json` (~4.1k events to 2026-09-26, &lt; 500 KB) |
-| Fields kept | `id, time, lat, lon, mag, place` sorted by time |
+| Filters | `minmagnitude=4.5`, `starttime=2018-01-01`, `endtime=2026-09-27T10:59:00`, global |
+| Bundled file | `public/data/earthquakes.json` — 66,281 events (2018-01-01 → 2026-09-27), ≈2.1 MB (≈0.8 MB gzipped) |
+| Fields kept | time, lat, lon, depth, mag, region (place without the “63 km W of” prefix), sorted by time |
+
+The file uses a compact format (`format: "qv-compact-1"`) so the M≥4.5 catalog stays Pages-friendly:
+rows are `[dtSeconds, lat, lon, depthKm, mag, placeIndex]`, where `dtSeconds` is whole seconds since the
+previous event (the first row counts from `t0`, epoch ms), lat/lon are rounded to 0.01°, magnitudes keep
+two decimals, and `placeIndex` points into a de-duplicated `places` array (−1 = none). `src/data/load.ts`
+decodes it; the older plain `{ events: [{ id, time, lat, lon, mag, place }] }` shape still loads. The M≥5.5
+subset is the same 4,065 events as the previous snapshot.
 
 Refresh the snapshot (commit the result for Pages):
 
 ```bash
-npm run data:update                           # 2018-01-01 → now
-npm run data:update -- --end 2026-09-27T10:59:00
+npm run data:update                                   # 2018-01-01 → now, M≥4.5
+npm run data:update -- --end 2026-09-27T10:59:00      # the bundled snapshot
+npm run data:update -- --minmag 5.0                   # smaller file (≈16k events); the slider starts at the floor
 ```
 
-`scripts/update-earthquakes.mjs` queries the USGS FDSN event service (GeoJSON, `orderby=time-asc`) and
-writes the same compact format. The train/holdout split stays chronological 70/30, so holdout covers the
+`scripts/update-earthquakes.mjs` queries the USGS FDSN event service (GeoJSON, `orderby=time-asc`). The
+service caps a query at 20,000 events, so it pages by calendar year (M≥4.5 is ≈6.5k–9k events a year) and
+splits any page that hits the cap in half. The slider’s minimum follows the file’s `minMag`. The train/holdout split stays chronological 70/30, so holdout covers the
 most recent ~30% of events.
 
 ## Tech stack
