@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+- Banner look-ahead extended to **30** predicted events (`BANNER_LOOKAHEAD_STEPS`); the top-3 candidates panel
+  stays at 10. Fallback now reads "No M6.0+ predicted in the next 30 events".
+
 - **Headline banner (experimental):** sticky bar at the top showing the best genome's next predicted **M≥6.0**
   event after today (UTC time + "in ~N days", magnitude, region + lat/lon), its fitness and generation. Fixed 6.0,
   independent of the slider. Throttled to one recompute per 500 ms, only when the best genome changes; flashes on
   change; never blank (initial population's prediction before training, dimmed "updating…" during slider rebuilds,
-  explicit "No M6.0+ predicted in the next 10 events" fallback).
+  explicit "No M6.0+ predicted in the next N events" fallback).
 
 - **Minimum-magnitude slider** (`M ≥ 4.5` … `M ≥ 7.5`, step 0.1, default `M ≥ 5.5`). One threshold drives the
   catalog: map, train/holdout split, replay, walk-forward predictions and the experimental candidates' target

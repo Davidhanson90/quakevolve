@@ -40,8 +40,10 @@ the genome id, its fitness and the generation it became best. It is labelled
 
 - **Fixed M6.0**, independent of the minimum-magnitude slider. The slider only changes which catalog the
   genome was trained on and looks ahead from; place names always come from the full catalog.
-- Same look-ahead as the candidates panel (`forecastNextBigQuake`, up to 10 predicted events). If none
-  reaches M6.0 it says so (“No M6.0+ predicted in the next 10 events…”) instead of hiding.
+- Same look-ahead logic as the candidates panel (`forecastNextBigQuake`), but up to **30** predicted events
+  (`BANNER_LOOKAHEAD_STEPS`; the candidates panel stays at 10). Trained genomes' magnitude heads usually sit
+  below M6, so a 10-step chain rarely reaches it; longer chains drift more, so treat far look-aheads with extra
+  scepticism. If none reaches M6.0 it says so (“No M6.0+ predicted in the next 30 events…”) instead of hiding.
 - **Updates as the model improves** (`BannerTracker`, `src/model/banner.ts`): it recomputes only when the
   best genome changes, at most every **500 ms** while training. A skipped update is picked up on the next
   generation after the window, or immediately on Pause. The block flashes briefly when the displayed

@@ -1,11 +1,12 @@
 import { LitElement, css, html } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 import {
+  BANNER_LOOKAHEAD_STEPS,
   BANNER_MIN_MAG,
   bannerFallbackText,
   relativeTimeHint
 } from "../model/banner.js";
-import { DEFAULT_LOOKAHEAD_STEPS, FORECAST_DISCLAIMER } from "../model/forecast.js";
+import { FORECAST_DISCLAIMER } from "../model/forecast.js";
 import { bannerStore, type BannerView } from "./banner-store.js";
 
 const utc = (t: number) => `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
@@ -294,7 +295,7 @@ export class QvNextQuakeBanner extends LitElement {
                   <span>Best genome <strong>#${snap.key.slice(-6)}</strong></span>
                   <span>fitness <strong>${snap.fitness.toFixed(3)}</strong></span>
                   <span>best since gen <strong>${snap.foundGeneration}</strong> (now ${v.generation})</span>
-                  <span class="extra">trained on M≥${snap.catalogMinMag.toFixed(1)} catalog · look-ahead ${DEFAULT_LOOKAHEAD_STEPS} events · after today (UTC)</span>
+                  <span class="extra">trained on M≥${snap.catalogMinMag.toFixed(1)} catalog · look-ahead ${BANNER_LOOKAHEAD_STEPS} events · after today (UTC)</span>
                 `
               : null}
             <span class="disclaimer">${FORECAST_DISCLAIMER} Toy GA output.</span>

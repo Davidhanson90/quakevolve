@@ -1,6 +1,6 @@
 import type { QuakeEvent } from "../data/types.js";
 import { genomeKey } from "./candidates.js";
-import { DEFAULT_LOOKAHEAD_STEPS, forecastNextBigQuake, type ForecastResult } from "./forecast.js";
+import { forecastNextBigQuake, type ForecastResult } from "./forecast.js";
 import type { Genome } from "./genome.js";
 
 /**
@@ -11,6 +11,13 @@ import type { Genome } from "./genome.js";
  * only changes which catalog the genome is trained on and looks ahead from).
  */
 export const BANNER_MIN_MAG = 6.0;
+
+/**
+ * How many predicted events the banner looks ahead for the first M≥6.0 one. Longer than the
+ * candidates panel (DEFAULT_LOOKAHEAD_STEPS = 10): trained genomes' magnitude heads tend to sit
+ * below M6, so a 10-step chain rarely reaches it. Longer chains drift more — still a toy.
+ */
+export const BANNER_LOOKAHEAD_STEPS = 30;
 
 /** Recompute at most this often while training (ms). Forced updates (reset, rebuild, pause) bypass it. */
 export const BANNER_THROTTLE_MS = 500;
@@ -84,7 +91,7 @@ export class BannerTracker {
   constructor(
     private readonly throttleMs = BANNER_THROTTLE_MS,
     private readonly now: () => number = () => Date.now(),
-    private readonly maxSteps = DEFAULT_LOOKAHEAD_STEPS
+    private readonly maxSteps = BANNER_LOOKAHEAD_STEPS
   ) {}
 
   get state(): BannerState {

@@ -3,6 +3,7 @@ import { MS_PER_DAY, MS_PER_HOUR, type QuakeEvent } from "../data/types.js";
 import { FEATURE_DIM } from "../features/extract.js";
 import { GENOME_LENGTH, HEAD_COUNT, WEIGHTS_PER_HEAD, type Genome } from "./genome.js";
 import {
+  BANNER_LOOKAHEAD_STEPS,
   BANNER_MIN_MAG,
   BANNER_THROTTLE_MS,
   BannerTracker,
@@ -11,7 +12,7 @@ import {
   relativeTimeHint,
   type BannerInput
 } from "./banner.js";
-import { DEFAULT_LOOKAHEAD_STEPS, startOfNextUtcDay } from "./forecast.js";
+import { DEFAULT_LOOKAHEAD_STEPS, forecastNextBigQuake, startOfNextUtcDay } from "./forecast.js";
 
 /** Catalog with a slider-like floor: magnitudes floor, floor+0.2, … (all below 6.0 for floor 4.5). */
 function catalog(n: number, floor = 4.5, place = "Testville, Tonga"): QuakeEvent[] {
@@ -24,10 +25,11 @@ function catalog(n: number, floor = 4.5, place = "Testville, Tonga"): QuakeEvent
   return out;
 }
 
-function biasGenome(mag: number, timeTol = 0.5, dLat = 0): Genome {
+function biasGenome(mag: number, timeTol = 0.5, dLat = 0, magFromMag = 0): Genome {
   const genes = new Float64Array(GENOME_LENGTH);
   const biases = [Math.log1p(24), dLat, 0, mag];
   for (let h = 0; h < HEAD_COUNT; h++) genes[h * WEIGHTS_PER_HEAD + FEATURE_DIM] = biases[h];
+  genes[3 * WEIGHTS_PER_HEAD + 0] = magFromMag; // weight on the current-magnitude feature
   const base = HEAD_COUNT * WEIGHTS_PER_HEAD;
   genes[base] = timeTol;
   genes[base + 1] = 5;
@@ -61,8 +63,28 @@ describe("BannerTracker: fixed M6.0 prediction", () => {
     low.offer(input(biasGenome(5.9), catalog(40, 4.5)));
     const fc = low.state.snapshot!.forecast;
     expect(fc.prediction).toBeNull();
-    expect(fc.stepsRun).toBe(DEFAULT_LOOKAHEAD_STEPS);
-    expect(bannerFallbackText(fc)).toBe(`No M6.0+ predicted in the next ${DEFAULT_LOOKAHEAD_STEPS} events. The very next predicted event is M5.90.`);
+    expect(fc.stepsRun).toBe(BANNER_LOOKAHEAD_STEPS);
+    expect(bannerFallbackText(fc)).toBe("No M6.0+ predicted in the next 30 events. The very next predicted event is M5.90.");
+  });
+
+  it("looks ahead 30 predicted events (the candidates panel stays at 10)", () => {
+    expect(BANNER_LOOKAHEAD_STEPS).toBe(30);
+    expect(DEFAULT_LOOKAHEAD_STEPS).toBe(10);
+    // Magnitude creeps up 0.07 per predicted event from the last catalog event (M5.1) → first M≥6.0 at step 13.
+    const creeping = biasGenome(0.07, 0.5, 0, 1);
+    const events = catalog(40, 4.5);
+    expect(events.at(-1)!.mag).toBeCloseTo(5.1);
+    expect(forecastNextBigQuake(creeping, events, { minMag: 6, referenceTime: REF }).prediction).toBeNull();
+    const tr = new BannerTracker();
+    tr.offer(input(creeping, events));
+    const p = tr.state.snapshot!.forecast.prediction!;
+    expect(p.step).toBe(13);
+    expect(p.mag).toBeGreaterThanOrEqual(6);
+    // …but not beyond 30: a slower creep (0.02/step → step 45) still falls back.
+    const slow = new BannerTracker();
+    slow.offer(input(biasGenome(0.02, 0.5, 0, 1), events));
+    expect(slow.state.snapshot!.forecast.prediction).toBeNull();
+    expect(slow.state.snapshot!.forecast.stepsRun).toBe(30);
   });
 
   it("names the location from placeEvents (full catalog) when given", () => {
@@ -208,8 +230,8 @@ describe("banner text helpers", () => {
     const base = { anchorTime: 0, lastEventTime: 0, prediction: null, nextMag: null };
     expect(bannerFallbackText({ ...base, stepsRun: 0, stoppedReason: "empty" })).toMatch(/No catalog/);
     expect(bannerFallbackText({ ...base, stepsRun: 3, stoppedReason: "degenerate" })).toMatch(/No M6\.0\+ predicted: the look-ahead left the data range .* after 3 events/);
-    expect(bannerFallbackText({ ...base, stepsRun: 10, stoppedReason: "belowThreshold" })).toBe("No M6.0+ predicted in the next 10 events.");
-    expect(predictionSignature({ ...base, stepsRun: 10, stoppedReason: "belowThreshold" })).toBe("belowThreshold:10:-");
+    expect(bannerFallbackText({ ...base, stepsRun: 30, stoppedReason: "belowThreshold" })).toBe("No M6.0+ predicted in the next 30 events.");
+    expect(predictionSignature({ ...base, stepsRun: 30, stoppedReason: "belowThreshold" })).toBe("belowThreshold:30:-");
   });
 
   it("relativeTimeHint picks a readable unit", () => {

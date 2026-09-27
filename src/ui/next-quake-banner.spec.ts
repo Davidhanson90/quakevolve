@@ -75,6 +75,6 @@ describe("qv-next-quake-banner", () => {
     tr.offer({ genome: genome(5.7), fitness: 0.2, generation: 0, events, referenceTime: Date.UTC(2026, 8, 28), catalogMinMag: 5.5 });
     const { text } = await mount();
     bannerStore.publish(view(tr, { training: false, generation: 0 }));
-    expect(await text()).toMatch(/No M6\.0\+ predicted in the next 10 events/);
+    expect(await text()).toMatch(/No M6\.0\+ predicted in the next 30 events/);
   });
 });
