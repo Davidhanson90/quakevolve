@@ -1,3 +1,4 @@
 export { QvPlayground } from "./playground.js";
 export { QvFitnessChart } from "./fitness-chart.js";
 export { QvQuakeMap } from "./quake-map.js";
+export { QvNextQuakeBanner } from "./next-quake-banner.js";

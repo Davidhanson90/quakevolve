@@ -41,6 +41,8 @@ import {
   type GaConfig,
   type GaState
 } from "../ga/evolve.js";
+import { BannerTracker } from "../model/banner.js";
+import { bannerStore } from "./banner-store.js";
 import "./fitness-chart.js";
 import { CANDIDATE_COLORS, type MapCandidate } from "./quake-map.js";
 
@@ -100,6 +102,8 @@ export class QvPlayground extends LitElement {
   declare minMagInput: number;
   declare magRange: MinMagRange;
 
+  /** Headline banner: best genome's next M≥6.0 prediction (throttled, never cleared). */
+  private banner = new BannerTracker();
   /** Full bundled catalog (M ≥ data floor). */
   private catalog: QuakeEvent[] = [];
   private minMagTimer: ReturnType<typeof setTimeout> | null = null;
@@ -427,6 +431,8 @@ export class QvPlayground extends LitElement {
   /** Slider input: update the readout now, rebuild (debounced) once the user stops dragging. */
   private onMinMagInput(value: number): void {
     this.minMagInput = clampMinMag(value, this.magRange.min, this.magRange.max);
+    // Keep the banner's last prediction visible (dimmed) until the rebuilt population is ready.
+    if (this.minMagInput !== this.minMag) this.banner.markStale("updating…");
     if (this.minMagTimer !== null) clearTimeout(this.minMagTimer);
     this.minMagTimer = setTimeout(() => this.commitMinMag(), MIN_MAG_DEBOUNCE_MS);
   }
@@ -434,7 +440,10 @@ export class QvPlayground extends LitElement {
   private commitMinMag(): void {
     if (this.minMagTimer !== null) clearTimeout(this.minMagTimer);
     this.minMagTimer = null;
-    if (this.minMagInput === this.minMag || this.loading || this.error) return;
+    if (this.minMagInput === this.minMag || this.loading || this.error) {
+      this.updateBanner(true); // slider returned to the applied value: clears "updating…"
+      return;
+    }
     const wasTraining = this.training;
     this.minMag = this.minMagInput;
     this.applyMinMag();
@@ -464,17 +473,20 @@ export class QvPlayground extends LitElement {
       this.holdoutScore = 0;
       this.meanPop = 0;
       this.statusMsg = `Only ${this.allEvents.length} events at M≥${this.minMag.toFixed(1)} — too few to train. Lower the threshold.`;
+      this.banner.markStale(`too few events at M≥${this.minMag.toFixed(1)} — showing the last prediction`);
       return;
     }
     this.referenceTime = startOfNextUtcDay(Date.now());
     this.forecaster = new CandidateForecaster(this.allEvents, {
       minMag: this.minMag,
       maxSteps: DEFAULT_LOOKAHEAD_STEPS,
-      referenceTime: this.referenceTime
+      referenceTime: this.referenceTime,
+      placeEvents: this.catalog
     });
     this.candidateSince.clear();
     this.ga = initPopulation(this.allEvents, this.trainEnd, this.config());
     this.syncFromGa();
+    this.updateBanner(true);
     this.refreshHoldoutAndReplay();
     this.statusMsg = "Population initialized — press Train to evolve";
   }
@@ -488,6 +500,40 @@ export class QvPlayground extends LitElement {
       this.ga.population.reduce((s, ind) => s + ind.fitness, 0) / this.ga.population.length;
     this.meanPop = mean;
     this.refreshCandidates();
+    this.updateBanner(false);
+  }
+
+  /**
+   * Offer the current best genome to the banner. Unforced offers are throttled
+   * (BANNER_THROTTLE_MS) and only recompute when the best genome changed.
+   */
+  private updateBanner(force: boolean): void {
+    if (!this.ga) return;
+    const changed = this.banner.offer(
+      {
+        genome: this.ga.best.genome,
+        fitness: this.ga.best.fitness,
+        generation: this.ga.generation,
+        events: this.allEvents,
+        placeEvents: this.catalog,
+        referenceTime: this.referenceTime,
+        catalogMinMag: this.minMag
+      },
+      force
+    );
+    if (changed) this.requestUpdate();
+  }
+
+  protected updated(): void {
+    // Publish after every render so the banner mirrors generation / training / stale state.
+    bannerStore.publish({
+      state: this.banner.state,
+      generation: this.generation,
+      training: this.training,
+      catalogMinMag: this.minMag,
+      loading: this.loading,
+      error: this.error
+    });
   }
 
   /**
@@ -572,6 +618,7 @@ export class QvPlayground extends LitElement {
   private onPause = (): void => {
     this.training = false;
     this.stopLoop();
+    this.updateBanner(true); // take any update the throttle skipped
     this.refreshHoldoutAndReplay();
     this.statusMsg = "Paused";
   };

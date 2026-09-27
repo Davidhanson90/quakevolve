@@ -29,6 +29,11 @@ export interface ForecastOptions {
    * tomorrow (UTC) so every prediction lands after today. Defaults to the last event time.
    */
   referenceTime?: number;
+  /**
+   * Events used only to name the predicted location (nearest catalog `place`). Defaults to
+   * `events`; pass the full catalog so names stay good when `events` is a sparse filtered set.
+   */
+  placeEvents?: QuakeEvent[];
 }
 
 export interface QuakeForecast {
@@ -150,7 +155,7 @@ export function forecastNextBigQuake(
           lat: pred.lat,
           lon: pred.lon,
           mag: pred.mag,
-          region: describeLocation(events, pred.lat, pred.lon),
+          region: describeLocation(options.placeEvents ?? events, pred.lat, pred.lon),
           radiusKm: tol.distTolKm,
           score: exceedanceScore(pred.mag, minMag, tol.magTol)
         }

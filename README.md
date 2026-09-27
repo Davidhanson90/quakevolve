@@ -30,6 +30,27 @@ No TensorFlow.js, no API keys, no backend. Pure TypeScript + Lit + Vite. The cat
 7. Watch the **Top 3 candidates (experimental)** panel and the coloured circles on the map update as the GA evolves
 8. **Pause** / **Reset** as needed
 
+## Headline banner: next M6.0+ event (experimental)
+
+A sticky banner at the top of the page always shows the **current best genome's** predicted next
+**M≥6.0** event after today: date/time (UTC) with an “in ~N days” hint and the genome's time window,
+magnitude, and location (nearest catalog region name + lat/lon ± the genome's distance tolerance), plus
+the genome id, its fitness and the generation it became best. It is labelled
+“Experimental. Not a real earthquake forecast.”
+
+- **Fixed M6.0**, independent of the minimum-magnitude slider. The slider only changes which catalog the
+  genome was trained on and looks ahead from; place names always come from the full catalog.
+- Same look-ahead as the candidates panel (`forecastNextBigQuake`, up to 10 predicted events). If none
+  reaches M6.0 it says so (“No M6.0+ predicted in the next 10 events…”) instead of hiding.
+- **Updates as the model improves** (`BannerTracker`, `src/model/banner.ts`): it recomputes only when the
+  best genome changes, at most every **500 ms** while training. A skipped update is picked up on the next
+  generation after the window, or immediately on Pause. The block flashes briefly when the displayed
+  prediction changes.
+- **Never blank:** before training it shows the initial population's best genome. Moving the slider dims the
+  last prediction with “updating…” until the rebuilt population's best genome replaces it. Reset
+  replaces it straight away with the new population's best. While loading it says so.
+- Compact two-row layout on narrow screens; not pinned on very short (landscape phone) viewports.
+
 ## Quick start
 
 ```bash
