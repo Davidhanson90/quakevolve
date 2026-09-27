@@ -8,6 +8,7 @@ import {
 } from "../model/banner.js";
 import { FORECAST_DISCLAIMER } from "../model/forecast.js";
 import { bannerStore, type BannerView } from "./banner-store.js";
+import { FOCUS_HEADLINE_EVENT, googleMapsUrl, normalizeLon } from "./headline.js";
 
 const utc = (t: number) => `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 const day = (t: number) => new Date(t).toISOString().slice(0, 10);
@@ -157,6 +158,43 @@ export class QvNextQuakeBanner extends LitElement {
       color: var(--qv-muted, #9aa8bc);
       font-variant-numeric: tabular-nums;
     }
+    button.place {
+      display: block;
+      max-width: 100%;
+      padding: 0;
+      margin: 0;
+      border: 0;
+      background: none;
+      font-family: inherit;
+      text-align: left;
+      cursor: pointer;
+      text-decoration: underline dotted color-mix(in srgb, var(--qv-muted, #9aa8bc) 70%, transparent);
+      text-underline-offset: 4px;
+      text-decoration-thickness: 2px;
+    }
+    button.place:hover,
+    button.place:focus-visible {
+      text-decoration-color: var(--qv-danger, #ff6b8a);
+    }
+    button.place:focus-visible,
+    a.gmaps:focus-visible {
+      outline: 2px solid var(--qv-accent, #5b9dff);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    .wheresub {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0 10px;
+    }
+    a.gmaps {
+      color: var(--qv-accent, #5b9dff);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    a.gmaps:hover {
+      text-decoration: underline;
+    }
     .fallback {
       grid-column: 1 / -1;
       align-self: center;
@@ -233,6 +271,11 @@ export class QvNextQuakeBanner extends LitElement {
     }
   `;
 
+  /** Ask the page to scroll the map into view and flash the headline marker. */
+  private focusMap = (): void => {
+    window.dispatchEvent(new CustomEvent(FOCUS_HEADLINE_EVENT));
+  };
+
   private renderBody() {
     const v = this.view;
     const snap = v.state.snapshot;
@@ -263,8 +306,27 @@ export class QvNextQuakeBanner extends LitElement {
           </div>
           <div class="where">
             <div class="k">Where</div>
-            <div class="big" data-testid="banner-where" title=${p.region}>${p.region}</div>
-            <div class="sub">lat ${p.lat.toFixed(1)}, lon ${p.lon.toFixed(1)} · ±${p.radiusKm.toFixed(0)} km</div>
+            <button
+              type="button"
+              class="big place"
+              data-testid="banner-where"
+              title="${p.region} — show on the map below"
+              @click=${this.focusMap}
+            >
+              ${p.region}
+            </button>
+            <div class="sub wheresub">
+              <span>lat ${p.lat.toFixed(1)}, lon ${normalizeLon(p.lon).toFixed(1)} · ±${p.radiusKm.toFixed(0)} km</span>
+              <a
+                class="gmaps"
+                data-testid="banner-gmaps"
+                href=${googleMapsUrl(p.lat, p.lon)}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open the predicted point in Google Maps (new tab)"
+                >Open in Google Maps ↗</a
+              >
+            </div>
           </div>
         `
       : html`<div class="fallback" data-testid="banner-fallback">${bannerFallbackText(snap.forecast)}</div>`;

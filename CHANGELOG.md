@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Headline on the map:** the banner's biggest-predicted-quake is drawn on the existing canvas map as a pink
+  star in a white crosshair with a true-scale 300 km geodesic ring and an “M… headline” label (legend entry,
+  gentle pulse that respects `prefers-reduced-motion`, antimeridian-safe). It uses the banner's throttled
+  snapshot, so both always agree. The banner's place name now scrolls to and flashes the marker, and an
+  “Open in Google Maps ↗” link (3-decimal coordinates, normalised longitude, new tab) sits under it.
+  No new dependencies.
+
 - **Fitness fixes.** (1) The three evolved tolerance genes are gone: tolerances are fixed at 1.0 log-hour,
   300 km and 0.5 magnitude (`src/model/scoring-config.ts`), because the GA was widening them to inflate its own
   score. Genomes are now 48 genes; `genomeFromGenes` accepts the old 51-gene shape and drops the extras.

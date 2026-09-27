@@ -57,6 +57,15 @@ its fitness and the generation it became best. It is labelled “Experimental. N
   last prediction with “updating…” until the rebuilt population's best genome replaces it. Reset
   replaces it straight away with the new population's best. While loading it says so.
 - Compact two-row layout on narrow screens; not pinned on very short (landscape phone) viewports.
+- **On the map:** the same snapshot is drawn on the catalog map as the *headline marker*: a pink star inside a
+  white crosshair with a true-scale 300 km geodesic ring (the fixed distance tolerance) and a label pill such as
+  “M5.45 headline” (listed in the legend). Map and banner read the same throttled `BannerTracker` snapshot, so
+  they always agree, including while training; the marker pulses gently (static under
+  `prefers-reduced-motion`) and dims with the banner while the population rebuilds. It wraps correctly across
+  the antimeridian. Clicking the place name in the banner scrolls the map into view and flashes the marker.
+- **Open in Google Maps:** a link under the place name opens
+  `https://www.google.com/maps/search/?api=1&query=LAT,LON` (3 decimals, longitude normalised to −180…180)
+  in a new tab (`rel="noopener noreferrer"`). The app itself loads nothing from Google.
 
 ## Quick start
 

@@ -43,10 +43,11 @@ import {
   type GaConfig,
   type GaState
 } from "../ga/evolve.js";
-import { BannerTracker } from "../model/banner.js";
+import { BANNER_LOOKAHEAD_STEPS, BannerTracker } from "../model/banner.js";
 import { bannerStore } from "./banner-store.js";
 import "./fitness-chart.js";
-import { CANDIDATE_COLORS, type MapCandidate } from "./quake-map.js";
+import { CANDIDATE_COLORS, HEADLINE_STYLE, type MapCandidate, type QvQuakeMap } from "./quake-map.js";
+import { FOCUS_HEADLINE_EVENT, headlineFromSnapshot } from "./headline.js";
 
 /** Walk-forward predictions shown on the map/replay: one per event in the catalog's last N days. */
 export const RECENT_PREDICTION_DAYS = 90;
@@ -376,6 +377,10 @@ export class QvPlayground extends LitElement {
     .bad {
       color: var(--qv-danger, #ff6b8a);
     }
+    .headline-swatch {
+      border-style: dashed;
+      font-size: 0.8rem;
+    }
     .legend {
       display: flex;
       flex-wrap: wrap;
@@ -392,14 +397,22 @@ export class QvPlayground extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    window.addEventListener(FOCUS_HEADLINE_EVENT, this.onFocusHeadline);
     void this.bootstrap();
   }
 
   disconnectedCallback(): void {
+    window.removeEventListener(FOCUS_HEADLINE_EVENT, this.onFocusHeadline);
     this.stopLoop();
     if (this.minMagTimer !== null) clearTimeout(this.minMagTimer);
     super.disconnectedCallback();
   }
+
+  /** Banner place name clicked: scroll the map into view and flash the headline marker. */
+  private onFocusHeadline = (): void => {
+    const map = this.renderRoot.querySelector<QvQuakeMap>("qv-quake-map");
+    map?.focusHeadline();
+  };
 
   private async bootstrap(): Promise<void> {
     try {
@@ -696,6 +709,11 @@ export class QvPlayground extends LitElement {
       lines.push(`  ${headNames[h]}: bias=${bias.toFixed(2)} · ${top}`);
     }
     return lines.join("\n");
+  }
+
+  private headlineLegendMag(): string {
+    const p = this.banner.state.snapshot?.forecast.prediction;
+    return p ? ` · M${p.mag.toFixed(2)}` : " · none yet";
   }
 
   private renderBaseline() {
@@ -998,6 +1016,7 @@ export class QvPlayground extends LitElement {
               .prediction=${prediction}
               .predictions=${this.replayPredictions()}
               .candidates=${this.mapCandidates()}
+              .headline=${headlineFromSnapshot(this.banner.state.snapshot, this.banner.state.stale)}
             ></qv-quake-map>
             <p class="muted" style="margin:8px 0 0;font-size:0.8rem">
               Blue dots = ${fmt(this.eventCount)} historical M≥${this.minMag.toFixed(1)} events.
@@ -1005,8 +1024,16 @@ export class QvPlayground extends LitElement {
               M≥${this.minMag.toFixed(1)} event in the catalog's last ${RECENT_PREDICTION_DAYS} days (each made from the history
               before it). Yellow ring = current replay prediction; green = the actual event it was predicting.
               Circles = experimental candidate predictions (radius = the fixed ${SCORE_TOLERANCES.distKm} km location tolerance).
+              Pink star + white crosshair and dashed ${SCORE_TOLERANCES.distKm} km ring = the banner's headline (biggest of
+              the best genome's next ${BANNER_LOOKAHEAD_STEPS} predicted events), updated together with the banner.
             </p>
             <div class="legend">
+              <span data-testid="legend-headline"
+                ><span class="swatch headline-swatch" style="border-color:${HEADLINE_STYLE.outline};color:${HEADLINE_STYLE.star}"
+                  >★</span
+                >
+                Headline (banner)${this.headlineLegendMag()}</span
+              >
               ${this.candidates.map(
                 (c) => html`<span
                   ><span class="swatch" style="border-color:${CANDIDATE_COLORS[c.rank - 1]}">${c.rank}</span>

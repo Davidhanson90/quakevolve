@@ -4,6 +4,7 @@ import { FEATURE_DIM } from "../features/extract.js";
 import { BannerTracker } from "../model/banner.js";
 import { GENOME_LENGTH, HEAD_COUNT, WEIGHTS_PER_HEAD, type Genome } from "../model/genome.js";
 import { bannerStore, type BannerView } from "./banner-store.js";
+import { FOCUS_HEADLINE_EVENT, googleMapsUrl } from "./headline.js";
 import "./next-quake-banner.js";
 
 function genome(mag: number): Genome {
@@ -70,6 +71,28 @@ describe("qv-next-quake-banner", () => {
     expect(t).toMatch(/M6\.40/);
     expect(t).toMatch(/updating…/);
     expect(el.shadowRoot!.querySelector(".inner.stale")).not.toBeNull();
+  });
+
+  it("links the place to Google Maps and to the map below", async () => {
+    const tr = new BannerTracker();
+    tr.offer({ genome: genome(6.4), fitness: 0.42, generation: 3, events, referenceTime: Date.UTC(2026, 8, 28), catalogMinMag: 5.5 });
+    const { el } = await mount();
+    bannerStore.publish(view(tr));
+    await el.updateComplete;
+    const p = tr.state.snapshot!.forecast.prediction!;
+    const a = el.shadowRoot!.querySelector<HTMLAnchorElement>("[data-testid=banner-gmaps]")!;
+    expect(a.textContent).toMatch(/Open in Google Maps/);
+    expect(a.getAttribute("href")).toBe(googleMapsUrl(p.lat, p.lon));
+    expect(a.getAttribute("href")).toMatch(/^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=-?\d+\.\d{3},-?\d+\.\d{3}$/);
+    expect(a.target).toBe("_blank");
+    expect(a.rel).toBe("noopener noreferrer");
+
+    let focused = 0;
+    const onFocus = () => focused++;
+    window.addEventListener(FOCUS_HEADLINE_EVENT, onFocus);
+    el.shadowRoot!.querySelector<HTMLButtonElement>("[data-testid=banner-where]")!.click();
+    window.removeEventListener(FOCUS_HEADLINE_EVENT, onFocus);
+    expect(focused).toBe(1);
   });
 
   it("shows a small event too (no threshold)", async () => {
