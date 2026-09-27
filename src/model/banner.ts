@@ -1,21 +1,17 @@
 import type { QuakeEvent } from "../data/types.js";
 import { genomeKey } from "./candidates.js";
-import { forecastNextBigQuake, type ForecastResult } from "./forecast.js";
+import { forecastBiggestQuake, type BiggestForecastResult } from "./forecast.js";
 import type { Genome } from "./genome.js";
 
 /**
- * EXPERIMENTAL headline banner: the current best genome's next predicted M≥6.0 event after
- * today. Toy model output for teaching — not a real earthquake forecast.
- *
- * The 6.0 threshold is fixed: it does not follow the minimum-magnitude slider (the slider
- * only changes which catalog the genome is trained on and looks ahead from).
+ * EXPERIMENTAL headline banner: the biggest event in the current best genome's next
+ * BANNER_LOOKAHEAD_STEPS predicted events after today (no magnitude threshold). Toy model
+ * output for teaching — not a real earthquake forecast.
  */
-export const BANNER_MIN_MAG = 6.0;
 
 /**
- * How many predicted events the banner looks ahead for the first M≥6.0 one. Longer than the
- * candidates panel (DEFAULT_LOOKAHEAD_STEPS = 10): trained genomes' magnitude heads tend to sit
- * below M6, so a 10-step chain rarely reaches it. Longer chains drift more — still a toy.
+ * Length of the banner's look-ahead chain (the candidates panel uses DEFAULT_LOOKAHEAD_STEPS
+ * = 10). Longer chains drift more — still a toy.
  */
 export const BANNER_LOOKAHEAD_STEPS = 30;
 
@@ -39,7 +35,7 @@ export interface BannerInput {
 }
 
 export interface BannerSnapshot {
-  forecast: ForecastResult;
+  forecast: BiggestForecastResult;
   /** Genome hash (same helper as the candidates panel). */
   key: string;
   fitness: number;
@@ -63,10 +59,10 @@ export interface BannerState {
 }
 
 /** Compact identity of what the banner shows (minute / 0.01 M / 0.1° resolution). */
-export function predictionSignature(fc: ForecastResult): string {
+export function predictionSignature(fc: BiggestForecastResult): string {
   const p = fc.prediction;
-  if (!p) return `${fc.stoppedReason}:${fc.stepsRun}:${fc.nextMag?.toFixed(2) ?? "-"}`;
-  return `found:${Math.round(p.time / 60_000)}:${p.mag.toFixed(2)}:${p.lat.toFixed(1)}:${p.lon.toFixed(1)}`;
+  if (!p) return `${fc.stoppedReason}:${fc.stepsRun}`;
+  return `${p.step}:${Math.round(p.time / 60_000)}:${p.mag.toFixed(2)}:${p.lat.toFixed(1)}:${p.lon.toFixed(1)}`;
 }
 
 /**
@@ -132,8 +128,7 @@ export class BannerTracker {
       this.pendingUpdate = true;
       return false;
     }
-    const forecast = forecastNextBigQuake(input.genome, input.events, {
-      minMag: BANNER_MIN_MAG,
+    const forecast = forecastBiggestQuake(input.genome, input.events, {
       maxSteps: this.maxSteps,
       referenceTime: input.referenceTime,
       placeEvents: input.placeEvents
@@ -170,15 +165,18 @@ export class BannerTracker {
   }
 }
 
-/** Honest text when there is no M≥6.0 prediction to show (the banner never goes blank). */
-export function bannerFallbackText(fc: ForecastResult, minMag = BANNER_MIN_MAG): string {
-  const m = minMag.toFixed(1);
+/** Where the shown event sits in the chain, e.g. "#7 of 30 in the chain". */
+export function bannerChainNote(fc: BiggestForecastResult): string {
+  if (!fc.prediction) return "";
+  const note = `#${fc.prediction.step} of ${fc.maxSteps} in the chain`;
+  if (fc.stoppedReason !== "degenerate") return note;
+  return `${note} (chain left the data range after ${fc.chainMags.length} events)`;
+}
+
+/** Text for real failures only (there is otherwise always a biggest event to show). */
+export function bannerFallbackText(fc: BiggestForecastResult): string {
   if (fc.stoppedReason === "empty") return "No catalog loaded yet.";
-  if (fc.stoppedReason === "degenerate") {
-    return `No M${m}+ predicted: the look-ahead left the data range (pole or M9.5 cap) after ${fc.stepsRun} events.`;
-  }
-  const next = fc.nextMag === null ? "" : ` The very next predicted event is M${fc.nextMag.toFixed(2)}.`;
-  return `No M${m}+ predicted in the next ${fc.stepsRun} events.${next}`;
+  return "The model's look-ahead left the data range at its first step (latitude at a pole or magnitude at the M9.5 cap), so there is no event to show.";
 }
 
 /** "in ~5 h", "in ~12 days", "in ~3 months", "in ~2 years" (or "… ago" for past times). */

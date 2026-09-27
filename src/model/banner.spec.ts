@@ -4,15 +4,15 @@ import { FEATURE_DIM } from "../features/extract.js";
 import { GENOME_LENGTH, HEAD_COUNT, WEIGHTS_PER_HEAD, type Genome } from "./genome.js";
 import {
   BANNER_LOOKAHEAD_STEPS,
-  BANNER_MIN_MAG,
   BANNER_THROTTLE_MS,
   BannerTracker,
+  bannerChainNote,
   bannerFallbackText,
   predictionSignature,
   relativeTimeHint,
   type BannerInput
 } from "./banner.js";
-import { DEFAULT_LOOKAHEAD_STEPS, forecastNextBigQuake, startOfNextUtcDay } from "./forecast.js";
+import { DEFAULT_LOOKAHEAD_STEPS, startOfNextUtcDay, type BiggestForecastResult } from "./forecast.js";
 
 /** Catalog with a slider-like floor: magnitudes floor, floor+0.2, … (all below 6.0 for floor 4.5). */
 function catalog(n: number, floor = 4.5, place = "Testville, Tonga"): QuakeEvent[] {
@@ -48,43 +48,63 @@ function clock(start = 0) {
   return { now: () => t, advance: (ms: number) => (t += ms) };
 }
 
-describe("BannerTracker: fixed M6.0 prediction", () => {
-  it("always looks for M≥6.0, whatever catalog floor the genome was trained on", () => {
-    expect(BANNER_MIN_MAG).toBe(6);
-    for (const floor of [4.5, 5.5, 6.5]) {
-      const tr = new BannerTracker();
-      tr.offer(input(biasGenome(6.3), catalog(40, floor), { catalogMinMag: floor }));
-      const p = tr.state.snapshot!.forecast.prediction!;
-      expect(p.mag).toBeGreaterThanOrEqual(6);
-      expect(p.time).toBeGreaterThanOrEqual(REF);
-      expect(p.step).toBe(1);
-    }
-    const low = new BannerTracker();
-    low.offer(input(biasGenome(5.9), catalog(40, 4.5)));
-    const fc = low.state.snapshot!.forecast;
-    expect(fc.prediction).toBeNull();
-    expect(fc.stepsRun).toBe(BANNER_LOOKAHEAD_STEPS);
-    expect(bannerFallbackText(fc)).toBe("No M6.0+ predicted in the next 30 events. The very next predicted event is M5.90.");
-  });
-
-  it("looks ahead 30 predicted events (the candidates panel stays at 10)", () => {
+describe("BannerTracker: biggest event in the next 30 predicted events", () => {
+  it("uses a 30-event look-ahead (the candidates panel stays at 10)", () => {
     expect(BANNER_LOOKAHEAD_STEPS).toBe(30);
     expect(DEFAULT_LOOKAHEAD_STEPS).toBe(10);
-    // Magnitude creeps up 0.07 per predicted event from the last catalog event (M5.1) → first M≥6.0 at step 13.
-    const creeping = biasGenome(0.07, 0.5, 0, 1);
+  });
+
+  it("always shows an event — no magnitude threshold, whatever the catalog floor", () => {
+    for (const mag of [4.6, 5.2, 5.9, 6.3]) {
+      const tr = new BannerTracker();
+      tr.offer(input(biasGenome(mag), catalog(40, 4.5)));
+      const fc = tr.state.snapshot!.forecast;
+      expect(fc.prediction).not.toBeNull();
+      expect(fc.prediction!.mag).toBeCloseTo(mag);
+      expect(fc.prediction!.time).toBeGreaterThanOrEqual(REF);
+      expect(fc.stoppedReason).toBe("complete");
+      expect(fc.chainMags).toHaveLength(30);
+    }
+  });
+
+  it("picks the largest magnitude in the chain, earliest on ties", () => {
     const events = catalog(40, 4.5);
     expect(events.at(-1)!.mag).toBeCloseTo(5.1);
-    expect(forecastNextBigQuake(creeping, events, { minMag: 6, referenceTime: REF }).prediction).toBeNull();
+    // Constant magnitude → every step ties → step 1.
+    const flat = new BannerTracker();
+    flat.offer(input(biasGenome(5.4), events));
+    expect(flat.state.snapshot!.forecast.prediction!.step).toBe(1);
+    expect(bannerChainNote(flat.state.snapshot!.forecast)).toBe("#1 of 30 in the chain");
+    // Creeping up 0.07 per step from M5.1 → the last step (M7.2) is the biggest.
+    const up = new BannerTracker();
+    up.offer(input(biasGenome(0.07, 0.5, 0, 1), events));
+    const p = up.state.snapshot!.forecast.prediction!;
+    expect(p.step).toBe(30);
+    expect(p.mag).toBeCloseTo(5.1 + 30 * 0.07);
+    expect(bannerChainNote(up.state.snapshot!.forecast)).toBe("#30 of 30 in the chain");
+    // Drifting down 0.05 per step → the first step is the biggest.
+    const down = new BannerTracker();
+    down.offer(input(biasGenome(-0.05, 0.5, 0, 1), events));
+    expect(down.state.snapshot!.forecast.prediction!.step).toBe(1);
+    expect(down.state.snapshot!.forecast.prediction!.mag).toBeCloseTo(5.05);
+  });
+
+  it("chain running off the map: biggest of the valid steps, else a clear fallback", () => {
+    // dLat +40 per step from lat -16 → 24, 64, then pinned at the pole on step 3.
     const tr = new BannerTracker();
-    tr.offer(input(creeping, events));
-    const p = tr.state.snapshot!.forecast.prediction!;
-    expect(p.step).toBe(13);
-    expect(p.mag).toBeGreaterThanOrEqual(6);
-    // …but not beyond 30: a slower creep (0.02/step → step 45) still falls back.
-    const slow = new BannerTracker();
-    slow.offer(input(biasGenome(0.02, 0.5, 0, 1), events));
-    expect(slow.state.snapshot!.forecast.prediction).toBeNull();
-    expect(slow.state.snapshot!.forecast.stepsRun).toBe(30);
+    tr.offer(input(biasGenome(0.07, 0.5, 40, 1), catalog(40, 4.5)));
+    const fc = tr.state.snapshot!.forecast;
+    expect(fc.stoppedReason).toBe("degenerate");
+    expect(fc.chainMags).toHaveLength(2);
+    expect(fc.prediction!.step).toBe(2);
+    expect(bannerChainNote(fc)).toBe("#2 of 30 in the chain (chain left the data range after 2 events)");
+    // Magnitude pinned at the M9.5 cap on step 1 → nothing valid to show.
+    const capped = new BannerTracker();
+    capped.offer(input(biasGenome(9.6), catalog(40, 4.5)));
+    const c = capped.state.snapshot!.forecast;
+    expect(c.prediction).toBeNull();
+    expect(bannerChainNote(c)).toBe("");
+    expect(bannerFallbackText(c)).toMatch(/left the data range at its first step/);
   });
 
   it("names the location from placeEvents (full catalog) when given", () => {
@@ -203,7 +223,8 @@ describe("BannerTracker: never empty", () => {
     const a = catalog(40, 5.5);
     const b = catalog(80, 4.5);
     const steps: (() => void)[] = [
-      () => tr.offer(input(biasGenome(5.8), a), true), // initial population (fallback text)
+      () => tr.offer(input(biasGenome(5.8), a), true), // initial population
+      () => tr.offer(input(biasGenome(9.6), a), true), // degenerate chain (fallback text)
       () => tr.offer(input(biasGenome(6.3), a, { generation: 1 })), // training (throttled)
       () => tr.offer(input(biasGenome(6.6), a, { generation: 2 })),
       () => tr.offer(input(biasGenome(6.6), a, { generation: 2 }), true), // pause
@@ -226,12 +247,20 @@ describe("BannerTracker: never empty", () => {
 });
 
 describe("banner text helpers", () => {
-  it("fallback text covers degenerate and empty look-aheads", () => {
-    const base = { anchorTime: 0, lastEventTime: 0, prediction: null, nextMag: null };
-    expect(bannerFallbackText({ ...base, stepsRun: 0, stoppedReason: "empty" })).toMatch(/No catalog/);
-    expect(bannerFallbackText({ ...base, stepsRun: 3, stoppedReason: "degenerate" })).toMatch(/No M6\.0\+ predicted: the look-ahead left the data range .* after 3 events/);
-    expect(bannerFallbackText({ ...base, stepsRun: 30, stoppedReason: "belowThreshold" })).toBe("No M6.0+ predicted in the next 30 events.");
-    expect(predictionSignature({ ...base, stepsRun: 30, stoppedReason: "belowThreshold" })).toBe("belowThreshold:30:-");
+  it("fallback text is only for real failures (empty catalog, degenerate first step)", () => {
+    const base: BiggestForecastResult = {
+      anchorTime: 0,
+      lastEventTime: 0,
+      prediction: null,
+      chainMags: [],
+      stepsRun: 0,
+      maxSteps: 30,
+      stoppedReason: "empty"
+    };
+    expect(bannerFallbackText(base)).toBe("No catalog loaded yet.");
+    expect(bannerFallbackText({ ...base, stepsRun: 1, stoppedReason: "degenerate" })).toMatch(/first step/);
+    expect(predictionSignature({ ...base, stepsRun: 1, stoppedReason: "degenerate" })).toBe("degenerate:1");
+    expect(bannerChainNote(base)).toBe("");
   });
 
   it("relativeTimeHint picks a readable unit", () => {

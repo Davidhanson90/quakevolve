@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Banner now shows the **next biggest predicted quake**: the largest-magnitude event in the best genome's next
+  30 predicted events (earliest on ties), with its position in the chain ("#k of 30"). The fixed M6.0 threshold
+  and the "No M6.0+ predicted" fallback are gone; text fallbacks remain only for an empty catalog or a chain that
+  leaves the data range at its first step. New `forecastBiggestQuake`; the top-3 candidates panel is unchanged.
+
 - Banner look-ahead extended to **30** predicted events (`BANNER_LOOKAHEAD_STEPS`); the top-3 candidates panel
   stays at 10. Fallback now reads "No M6.0+ predicted in the next 30 events".
 

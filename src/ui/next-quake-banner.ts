@@ -2,7 +2,7 @@ import { LitElement, css, html } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 import {
   BANNER_LOOKAHEAD_STEPS,
-  BANNER_MIN_MAG,
+  bannerChainNote,
   bannerFallbackText,
   relativeTimeHint
 } from "../model/banner.js";
@@ -200,7 +200,7 @@ export class QvNextQuakeBanner extends LitElement {
       }
       .k,
       .win,
-      .magsub,
+      .range,
       .meta .extra {
         display: none;
       }
@@ -243,6 +243,8 @@ export class QvNextQuakeBanner extends LitElement {
       return html`<div class="main"><div class="fallback">${msg}</div></div>`;
     }
     const p = snap.forecast.prediction;
+    const mags = snap.forecast.chainMags;
+    const range = mags.length > 1 ? `M${Math.min(...mags).toFixed(1)}–${Math.max(...mags).toFixed(1)}` : "";
     const main = p
       ? html`
           <div class="when">
@@ -255,7 +257,9 @@ export class QvNextQuakeBanner extends LitElement {
           <div class="magcell">
             <div class="k">Magnitude</div>
             <div class="big mag" data-testid="banner-mag">M${p.mag.toFixed(2)}</div>
-            <div class="sub magsub">P(M≥${BANNER_MIN_MAG.toFixed(1)}) ${p.score.toFixed(2)} (uncalibrated)</div>
+            <div class="sub magsub" data-testid="banner-chain">
+              ${bannerChainNote(snap.forecast)}${range ? html`<span class="range"> · chain ${range}</span>` : null}
+            </div>
           </div>
           <div class="where">
             <div class="k">Where</div>
@@ -285,7 +289,7 @@ export class QvNextQuakeBanner extends LitElement {
       <div class="bar" role="status" aria-live="polite">
         <div class="inner ${stale ? "stale" : ""}">
           <div class="top">
-            <span class="title">Next M${BANNER_MIN_MAG.toFixed(1)}+ event · model prediction</span>
+            <span class="title">Next biggest predicted quake · next ${BANNER_LOOKAHEAD_STEPS} events</span>
             ${statusPill}
           </div>
           ${this.renderBody()}
@@ -295,7 +299,7 @@ export class QvNextQuakeBanner extends LitElement {
                   <span>Best genome <strong>#${snap.key.slice(-6)}</strong></span>
                   <span>fitness <strong>${snap.fitness.toFixed(3)}</strong></span>
                   <span>best since gen <strong>${snap.foundGeneration}</strong> (now ${v.generation})</span>
-                  <span class="extra">trained on M≥${snap.catalogMinMag.toFixed(1)} catalog · look-ahead ${BANNER_LOOKAHEAD_STEPS} events · after today (UTC)</span>
+                  <span class="extra">trained on M≥${snap.catalogMinMag.toFixed(1)} catalog · largest magnitude in its next ${BANNER_LOOKAHEAD_STEPS} predicted events after today (UTC)</span>
                 `
               : null}
             <span class="disclaimer">${FORECAST_DISCLAIMER} Toy GA output.</span>

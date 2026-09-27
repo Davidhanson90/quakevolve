@@ -30,20 +30,24 @@ No TensorFlow.js, no API keys, no backend. Pure TypeScript + Lit + Vite. The cat
 7. Watch the **Top 3 candidates (experimental)** panel and the coloured circles on the map update as the GA evolves
 8. **Pause** / **Reset** as needed
 
-## Headline banner: next M6.0+ event (experimental)
+## Headline banner: next biggest predicted quake (experimental)
 
-A sticky banner at the top of the page always shows the **current best genome's** predicted next
-**M≥6.0** event after today: date/time (UTC) with an “in ~N days” hint and the genome's time window,
-magnitude, and location (nearest catalog region name + lat/lon ± the genome's distance tolerance), plus
-the genome id, its fitness and the generation it became best. It is labelled
-“Experimental. Not a real earthquake forecast.”
+A sticky banner at the top of the page always shows the **biggest** event in the **current best genome's**
+next **30** predicted events after today: date/time (UTC) with an “in ~N days” hint and the genome's time
+window, magnitude, where it sits in the chain (“#7 of 30 in the chain”, plus the chain's magnitude range),
+and location (nearest catalog region name + lat/lon ± the genome's distance tolerance), with the genome id,
+its fitness and the generation it became best. It is labelled “Experimental. Not a real earthquake forecast.”
 
-- **Fixed M6.0**, independent of the minimum-magnitude slider. The slider only changes which catalog the
-  genome was trained on and looks ahead from; place names always come from the full catalog.
-- Same look-ahead logic as the candidates panel (`forecastNextBigQuake`), but up to **30** predicted events
-  (`BANNER_LOOKAHEAD_STEPS`; the candidates panel stays at 10). Trained genomes' magnitude heads usually sit
-  below M6, so a 10-step chain rarely reaches it; longer chains drift more, so treat far look-aheads with extra
-  scepticism. If none reaches M6.0 it says so (“No M6.0+ predicted in the next 30 events…”) instead of hiding.
+- **No magnitude threshold.** `forecastBiggestQuake` (`src/model/forecast.ts`) chains predictions exactly like
+  the candidates panel (each predicted event is appended and the next one predicted from it, dated from the
+  start of tomorrow UTC) for `BANNER_LOOKAHEAD_STEPS = 30` events and returns the largest magnitude — the
+  earliest one on ties. So there is always an event to show. The top-3 candidates panel is unchanged (next
+  event ≥ the slider value, 10-event look-ahead).
+- The chain starts from the slider-filtered catalog the genome was trained on; place names always come from
+  the full catalog. Long chains drift (locations walk, magnitudes creep), so treat far steps sceptically.
+- Only real failures fall back to text: an empty catalog, or a chain that leaves the data range (latitude at
+  a pole or magnitude at the M9.5 cap) at its very first step. If it leaves the range later, the biggest of
+  the valid steps is shown with a note.
 - **Updates as the model improves** (`BannerTracker`, `src/model/banner.ts`): it recomputes only when the
   best genome changes, at most every **500 ms** while training. A skipped update is picked up on the next
   generation after the window, or immediately on Pause. The block flashes briefly when the displayed

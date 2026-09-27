@@ -7,6 +7,7 @@ import {
   DEFAULT_LOOKAHEAD_STEPS,
   FORECAST_DISCLAIMER,
   exceedanceScore,
+  forecastBiggestQuake,
   forecastNextBigQuake,
   startOfNextUtcDay
 } from "./forecast.js";
@@ -155,5 +156,35 @@ describe("forecastNextBigQuake", () => {
 
   it("labels itself experimental", () => {
     expect(FORECAST_DISCLAIMER).toMatch(/Experimental.*Not a real earthquake forecast/);
+  });
+});
+
+describe("forecastBiggestQuake", () => {
+  it("returns the largest predicted magnitude in the chain (earliest on ties), dated after the reference", () => {
+    const events = catalog(40);
+    const ref = startOfNextUtcDay(events.at(-1)!.time + MS_PER_DAY);
+    const flat = forecastBiggestQuake(biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 5.2 }), events, { maxSteps: 30, referenceTime: ref });
+    expect(flat.prediction!.step).toBe(1);
+    expect(flat.prediction!.mag).toBeCloseTo(5.2);
+    expect(flat.prediction!.time).toBeGreaterThanOrEqual(ref);
+    expect(flat.chainMags).toHaveLength(30);
+    expect(flat.stoppedReason).toBe("complete");
+    expect(flat.maxSteps).toBe(30);
+    expect(flat.prediction!.region).toMatch(/Testville, Tonga/);
+
+    const up = forecastBiggestQuake(biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 0.03, magFromMag: 1 }), events, { maxSteps: 20, referenceTime: ref });
+    expect(up.prediction!.step).toBe(20);
+    expect(up.prediction!.mag).toBeCloseTo(Math.max(...up.chainMags));
+    // Later steps accumulate the earlier predicted gaps (≈1 day each).
+    expect(up.prediction!.time - ref).toBeGreaterThan(18 * MS_PER_DAY);
+  });
+
+  it("defaults to the candidates look-ahead and handles empty / degenerate chains", () => {
+    const events = catalog(40);
+    expect(forecastBiggestQuake(biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 5.2 }), events).chainMags).toHaveLength(DEFAULT_LOOKAHEAD_STEPS);
+    const empty = forecastBiggestQuake(biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 5.2 }), [], { referenceTime: 5 });
+    expect(empty).toMatchObject({ prediction: null, stoppedReason: "empty", anchorTime: 5, stepsRun: 0 });
+    const capped = forecastBiggestQuake(biasGenome({ logHours: DAY_GAP, dLat: 0, dLon: 0, mag: 9.6 }), events, { maxSteps: 30 });
+    expect(capped).toMatchObject({ prediction: null, stoppedReason: "degenerate", stepsRun: 1, chainMags: [] });
   });
 });

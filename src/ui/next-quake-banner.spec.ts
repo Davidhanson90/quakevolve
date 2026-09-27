@@ -55,8 +55,10 @@ describe("qv-next-quake-banner", () => {
     const { el, text } = await mount();
     bannerStore.publish(view(tr));
     let t = await text();
-    expect(t).toMatch(/Next M6\.0\+ event/);
+    expect(t).toMatch(/Next biggest predicted quake · next 30 events/);
     expect(t).toMatch(/M6\.40/);
+    expect(t).toMatch(/#1 of 30 in the chain/);
+    expect(t).not.toMatch(/M6\.0\+/);
     expect(t).toMatch(/UTC/);
     expect(t).toMatch(/near Testville, Tonga/);
     expect(t).toMatch(/fitness 0\.420/);
@@ -70,11 +72,21 @@ describe("qv-next-quake-banner", () => {
     expect(el.shadowRoot!.querySelector(".inner.stale")).not.toBeNull();
   });
 
-  it("shows the fallback line when no M6.0+ event is in the look-ahead", async () => {
+  it("shows a small event too (no threshold)", async () => {
     const tr = new BannerTracker();
-    tr.offer({ genome: genome(5.7), fitness: 0.2, generation: 0, events, referenceTime: Date.UTC(2026, 8, 28), catalogMinMag: 5.5 });
+    tr.offer({ genome: genome(4.7), fitness: 0.2, generation: 0, events, referenceTime: Date.UTC(2026, 8, 28), catalogMinMag: 5.5 });
     const { text } = await mount();
     bannerStore.publish(view(tr, { training: false, generation: 0 }));
-    expect(await text()).toMatch(/No M6\.0\+ predicted in the next 30 events/);
+    const t = await text();
+    expect(t).toMatch(/M4\.70/);
+    expect(t).not.toMatch(/No M6/);
+  });
+
+  it("shows a clear fallback only when the chain fails at its first step", async () => {
+    const tr = new BannerTracker();
+    tr.offer({ genome: genome(9.6), fitness: 0.2, generation: 0, events, referenceTime: Date.UTC(2026, 8, 28), catalogMinMag: 5.5 });
+    const { text } = await mount();
+    bannerStore.publish(view(tr, { training: false, generation: 0 }));
+    expect(await text()).toMatch(/left the data range at its first step/);
   });
 });

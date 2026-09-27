@@ -166,3 +166,96 @@ export function forecastNextBigQuake(
 
   return { anchorTime, lastEventTime, prediction: null, nextMag, stepsRun, stoppedReason };
 }
+
+/** A predicted event from the look-ahead chain (no threshold, so no exceedance score). */
+export type ChainForecast = Omit<QuakeForecast, "score">;
+
+export type BiggestStopReason = "complete" | "degenerate" | "empty";
+
+export interface BiggestForecastResult {
+  /** Predictions are dated from here: max(last catalog event, referenceTime). */
+  anchorTime: number;
+  lastEventTime: number;
+  /** Largest-magnitude predicted event in the chain (earliest on ties), or null if no valid step. */
+  prediction: ChainForecast | null;
+  /** Magnitudes of the valid chain steps, step 1 first. */
+  chainMags: number[];
+  /** Steps attempted, including a final degenerate one. */
+  stepsRun: number;
+  /** Look-ahead length requested. */
+  maxSteps: number;
+  stoppedReason: BiggestStopReason;
+}
+
+/**
+ * EXPERIMENTAL, deterministic: roll a genome forward `maxSteps` predicted events from the end
+ * of the catalog (same chaining and dating as forecastNextBigQuake) and return the predicted
+ * event with the largest magnitude — the earliest one if several tie. No magnitude threshold.
+ *
+ * The chain stops early at a degenerate step (latitude pinned at a pole or magnitude at the
+ * M9.5 output cap); that step is excluded and the biggest of the earlier steps is returned.
+ */
+export function forecastBiggestQuake(
+  genome: Genome,
+  events: QuakeEvent[],
+  options: Omit<ForecastOptions, "minMag"> = {}
+): BiggestForecastResult {
+  const maxSteps = options.maxSteps ?? DEFAULT_LOOKAHEAD_STEPS;
+  if (events.length === 0) {
+    return {
+      anchorTime: options.referenceTime ?? 0,
+      lastEventTime: 0,
+      prediction: null,
+      chainMags: [],
+      stepsRun: 0,
+      maxSteps,
+      stoppedReason: "empty"
+    };
+  }
+
+  const lastEventTime = events[events.length - 1].time;
+  const anchorTime = Math.max(lastEventTime, options.referenceTime ?? lastEventTime);
+  const tol = decodeTolerances(genome);
+  const history = events.slice();
+  const chainMags: number[] = [];
+  let best: Omit<ChainForecast, "region"> | null = null;
+  let stoppedReason: BiggestStopReason = "complete";
+  let stepsRun = 0;
+
+  for (let step = 1; step <= maxSteps; step++) {
+    const last = history[history.length - 1];
+    const pred = predict(genome, extractFeatures(history, history.length - 1), last.lat, last.lon);
+    stepsRun = step;
+    if (Math.abs(pred.lat) >= 89.9 || pred.mag >= PRED_MAG_MAX) {
+      stoppedReason = "degenerate";
+      break;
+    }
+    const gapMs = hoursFromLog(pred.logHours) * MS_PER_HOUR;
+    chainMags.push(pred.mag);
+    if (!best || pred.mag > best.mag) {
+      const offset = anchorTime + (last.time - lastEventTime);
+      best = {
+        step,
+        time: offset + gapMs,
+        windowStart: offset + hoursFromLog(Math.max(0, pred.logHours - tol.timeTol)) * MS_PER_HOUR,
+        windowEnd: offset + hoursFromLog(pred.logHours + tol.timeTol) * MS_PER_HOUR,
+        lat: pred.lat,
+        lon: pred.lon,
+        mag: pred.mag,
+        radiusKm: tol.distTolKm
+      };
+    }
+    history.push({ id: `lookahead-${step}`, time: last.time + gapMs, lat: pred.lat, lon: pred.lon, mag: pred.mag });
+  }
+
+  return {
+    anchorTime,
+    lastEventTime,
+    // Region lookup scans the catalog, so it is done once, for the winner only.
+    prediction: best ? { ...best, region: describeLocation(options.placeEvents ?? events, best.lat, best.lon) } : null,
+    chainMags,
+    stepsRun,
+    maxSteps,
+    stoppedReason
+  };
+}
